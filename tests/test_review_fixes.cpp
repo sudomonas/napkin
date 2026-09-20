@@ -9,7 +9,6 @@
 #include <cmath>
 
 #include <QBuffer>
-#include <QBuffer>
 #include <QClipboard>
 #include <QDir>
 #include <QLabel>

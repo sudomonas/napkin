@@ -117,7 +117,6 @@ private:
     // ~1s. Anything that reads the clipboard after a raise must go through
     // this; see pasteOntoNewNapkinFromTray().
     void whenWindowIsActive(std::function<void()> then);
-
     void exportCurrentBuffer();
     void exportEverything();
     // Both export paths end here, so the result is reported the same way and
