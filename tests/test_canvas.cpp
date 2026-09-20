@@ -189,6 +189,88 @@ private slots:
         QVERIFY(text.contains(QStringLiteral("and a closing note")));
     }
 
+    // --- arrows walk the board as it looks -----------------------------------
+    // Down used to mean "+1 in document order", which on a masonry board is the
+    // card to the RIGHT: with three columns it travelled along the top row,
+    // once per column, before it ever went down, and the card directly beneath
+    // the cursor could not be reached by any key at all.
+    void arrowsMoveByGeometryNotByDocumentOrder()
+    {
+        GuiFixture f;
+        f.window.resize(1800, 900);            // wide enough for three columns
+        const auto id = f.buffers.create();
+        const char* bodies[] = {"ONE", "TWO\na\nb", "THREE", "FOUR\na\nb\nc", "FIVE",
+                                "SIX\na\nb", "SEVEN", "EIGHT", "NINE\na\nb\nc", "TEN"};
+        for (const char* body : bodies)
+            f.service.appendTo(id, Item::makeText(QString::fromUtf8(body)));
+        f.model()->reload();
+        f.select(id);
+
+        auto* canvas = f.canvas();
+        const auto cards = canvas->findChildren<ItemCard*>();
+        QSet<int> columns;
+        for (auto* c : cards) columns.insert(c->geometry().x());
+        if (columns.size() < 2) QSKIP("the board laid out in one column; nothing to cross");
+
+        auto rectOfSelected = [&]() -> QRect {
+            const auto ids = canvas->selection();
+            if (ids.isEmpty()) return {};
+            for (auto* c : canvas->findChildren<ItemCard*>())
+                if (c->itemId() == ids.first()) return c->geometry();
+            return {};
+        };
+
+        canvas->setCursorTo(0, Qt::NoModifier);
+        const QRect start = rectOfSelected();
+        QVERIFY(start.isValid());
+
+        QTest::keyClick(canvas, Qt::Key_Down);
+        const QRect below = rectOfSelected();
+        QVERIFY2(below.isValid(), "Down selected nothing");
+        QCOMPARE(below.x(), start.x());                      // same column
+        QVERIFY2(below.y() > start.y(), "Down did not move down the column");
+
+        QTest::keyClick(canvas, Qt::Key_Right);
+        const QRect across = rectOfSelected();
+        QVERIFY2(across.x() > below.x(), "Right did not cross to the next column");
+
+        QTest::keyClick(canvas, Qt::Key_Left);
+        QCOMPARE(rectOfSelected().x(), below.x());           // and back again
+
+        QTest::keyClick(canvas, Qt::Key_Up);
+        const QRect up = rectOfSelected();
+        QCOMPARE(up.x(), start.x());
+        QCOMPARE(up.y(), start.y());                         // exactly where we began
+    }
+
+    // Deliberately no wrap: falling off the bottom of a column into the top of
+    // the next one is the jump across the whole board that makes a spatial walk
+    // feel random. Left/Right is how you change column.
+    void downAtTheBottomOfAColumnStaysPut()
+    {
+        GuiFixture f;
+        f.window.resize(1800, 900);
+        const auto id = f.buffers.create();
+        for (int i = 0; i < 9; ++i)
+            f.service.appendTo(id, Item::makeText(QStringLiteral("item %1").arg(i)));
+        f.model()->reload();
+        f.select(id);
+
+        auto* canvas = f.canvas();
+        canvas->setCursorTo(0, Qt::NoModifier);
+        for (int i = 0; i < 20; ++i) QTest::keyClick(canvas, Qt::Key_Down);
+        const int bottom = canvas->cursorIndex();
+
+        // The foot of the FIRST column, not the last card on the board — which
+        // is where stepping document order would have ended up.
+        QVERIFY2(bottom < 8, qPrintable(QStringLiteral(
+                     "Down ran out of its column and into another (index %1)").arg(bottom)));
+
+        QTest::keyClick(canvas, Qt::Key_Down);
+        QCOMPARE(canvas->cursorIndex(), bottom);
+        QCOMPARE(canvas->selection().size(), 1);
+    }
+
     // The board is virtualized: only the visible band has card widgets. Every
     // selection verb used to be written against `cards_`, so "select all" meant
     // "select what happens to be on screen" — and Ctrl+A then Ctrl+C copied a

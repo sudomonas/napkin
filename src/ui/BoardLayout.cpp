@@ -127,6 +127,7 @@ void BoardLayout::rebuild(const std::vector<Item>& items)
     columnWidth_ = std::clamp((usable - (columns - 1) * kCardGap) / columns,
                               kCardMinWidth, kCardMaxWidth);
 
+    columns_ = columns;
     std::vector<int> bottoms(size_t(columns), kPadTop);
     placements_.reserve(items.size());
     for (const auto& item : items) {
@@ -158,6 +159,62 @@ std::vector<int> BoardLayout::indicesIn(const QRect& visible, int overscan) cons
 void BoardLayout::invalidate(ItemId id)
 {
     cache_.remove(id);
+}
+
+int BoardLayout::columnOf(int index) const
+{
+    if (index < 0 || index >= int(placements_.size())) return -1;
+    const int pitch = columnWidth_ + kCardGap;
+    if (pitch <= 0) return 0;
+    return (placements_[size_t(index)].rect.x() - kPadX) / pitch;
+}
+
+int BoardLayout::neighbour(int index, Step step) const
+{
+    if (index < 0 || index >= int(placements_.size())) return -1;
+    const int col = columnOf(index);
+    const QRect cur = placements_[size_t(index)].rect;
+
+    // Within a column the cards are a plain top-to-bottom stack, so up and down
+    // are the adjacent slot in that same column — and the bottom of a column is
+    // the end. Deliberately no wrap to the next column's top: that jump across
+    // the whole board is the unpredictable move, and Left/Right is how you
+    // change column.
+    if (step == Step::Up || step == Step::Down) {
+        int best = -1;
+        for (size_t i = 0; i < placements_.size(); ++i) {
+            if (columnOf(int(i)) != col) continue;
+            const int y = placements_[i].rect.y();
+            if (step == Step::Down ? y <= cur.y() : y >= cur.y()) continue;
+            if (best < 0
+                || (step == Step::Down ? y < placements_[size_t(best)].rect.y()
+                                       : y > placements_[size_t(best)].rect.y()))
+                best = int(i);
+        }
+        return best;
+    }
+
+    const int target = col + (step == Step::Right ? 1 : -1);
+    if (target < 0 || target >= columns_) return -1;
+
+    // The card that best lines up with this one: most vertical overlap, and
+    // where nothing overlaps at all, the nearest centre. Ragged columns mean
+    // the answer is rarely the same row index.
+    int best = -1;
+    int bestOverlap = 0;
+    int bestGap = 0;
+    for (size_t i = 0; i < placements_.size(); ++i) {
+        if (columnOf(int(i)) != target) continue;
+        const QRect r = placements_[i].rect;
+        const int overlap = std::min(cur.bottom(), r.bottom()) - std::max(cur.top(), r.top());
+        const int gap = std::abs(r.center().y() - cur.center().y());
+        if (best < 0 || overlap > bestOverlap || (overlap == bestOverlap && gap < bestGap)) {
+            best = int(i);
+            bestOverlap = overlap;
+            bestGap = gap;
+        }
+    }
+    return best;
 }
 
 int BoardLayout::indexOf(ItemId id) const

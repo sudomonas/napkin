@@ -703,11 +703,27 @@ void ItemCanvas::setCursorTo(int index, Qt::KeyboardModifiers modifiers)
     if (auto* now = liveCardAt(cursor_)) now->setCurrent(true);
 }
 
-void ItemCanvas::moveCursor(int delta, Qt::KeyboardModifiers modifiers)
+// Arrows walk the board as it LOOKS, not as it was written.
+//
+// They used to step document order — Down and Right both meaning "+1" — on the
+// grounds that masonry makes a spatial walk unpredictable. It does not: the
+// board deals every card into an explicit column, so "below" is exact. What the
+// old rule actually produced was Down travelling sideways along the top row,
+// once per column, before it ever moved down; with three columns the card
+// directly beneath the cursor was unreachable by any key at all.
+//
+// On a one-column board this is identical to stepping document order, so narrow
+// windows behave exactly as before.
+void ItemCanvas::moveCursorSpatially(BoardLayout::Step step, Qt::KeyboardModifiers modifiers)
 {
     if (items_.empty()) return;
-    setCursorTo(cursor_ < 0 ? (delta > 0 ? 0 : int(items_.size()) - 1) : cursor_ + delta,
-                modifiers);
+    // The first arrow press has nowhere to move from, so it lands rather than
+    // doing nothing — whichever direction it was.
+    if (cursor_ < 0) { setCursorTo(0, modifiers); return; }
+
+    const int target = board_.neighbour(cursor_, step);
+    if (target < 0) return;   // the board ends this way; stay put
+    setCursorTo(target, modifiers);
 }
 
 void ItemCanvas::keyPressEvent(QKeyEvent* e)
@@ -722,10 +738,10 @@ void ItemCanvas::keyPressEvent(QKeyEvent* e)
     // so a spatial walk would be unpredictable, while document order is the
     // order the cards were made.
     switch (e->key()) {
-    case Qt::Key_Down:
-    case Qt::Key_Right: moveCursor(+1, e->modifiers()); return;
-    case Qt::Key_Up:
-    case Qt::Key_Left:  moveCursor(-1, e->modifiers()); return;
+    case Qt::Key_Down:  moveCursorSpatially(BoardLayout::Step::Down, e->modifiers()); return;
+    case Qt::Key_Up:    moveCursorSpatially(BoardLayout::Step::Up, e->modifiers()); return;
+    case Qt::Key_Right: moveCursorSpatially(BoardLayout::Step::Right, e->modifiers()); return;
+    case Qt::Key_Left:  moveCursorSpatially(BoardLayout::Step::Left, e->modifiers()); return;
     case Qt::Key_Home:  setCursorTo(0, e->modifiers()); return;
     case Qt::Key_End:   setCursorTo(int(items_.size()) - 1, e->modifiers()); return;
     case Qt::Key_Space:

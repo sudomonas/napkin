@@ -785,6 +785,32 @@ is under it:
 | `Esc` while editing | stop editing, keep the block selected |
 | Click empty canvas | clear the selection, focus the composer |
 | `Ctrl+A` | select every item (not the unwritten composer) |
+| `↑` `↓` | move **within the column**, to the card above or below |
+| `←` `→` | cross to the neighbouring column, landing on whichever card lines up |
+| `Tab` | the next card in the focus chain — the "visit everything once" route |
+
+**Arrows walk the board as it looks, not as it was written.**
+
+> **Corrected.** They used to step *document order*, with `Down` and `Right`
+> both meaning `+1`, justified as "masonry makes a spatial walk unpredictable".
+> The premise was mistaken. `rebuild()` deals every card into an explicit
+> column and `Slot::rect.x()` encodes which, so "the card below" is exact
+> geometry, not a nearest-neighbour guess. What the rule actually produced,
+> measured on a three-column board: the cursor started top-left on TEN, and two
+> `Down` presses landed on **EIGHT, top-right** — `Down` travelled along the top
+> row once per column before it ever descended, and the card directly beneath
+> the cursor was unreachable by any key. It got worse the wider the window.
+>
+> `BoardLayout::neighbour()` answers it now. Up/Down take the adjacent slot in
+> the same column; Left/Right cross one column and pick the card with the most
+> vertical overlap, falling back to the nearest centre when nothing overlaps —
+> ragged columns mean the answer is rarely the same row index. **The bottom of a
+> column is the end**: no wrap to the next column's top, because that jump
+> across the whole board is the genuinely unpredictable move the original
+> comment was right to fear. Left/Right is how you change column. On a
+> one-column board this is identical to the old behaviour, so narrow windows are
+> unchanged.
+
 
 **Three states, three treatments.** At rest: hairline border. Selected: accent
 border at 2px plus a faint tint. **Editing: accent border and no tint at all** —
@@ -1853,6 +1879,8 @@ not fail.**
 
 | `Ctrl+A` selected only the virtualized visible band: on a 60-item napkin it selected 13, copied 13, and `Ctrl+A`+`Delete` left 47 items behind silently | **critical** | fixed — selection, cursor and copy are computed over `items_`, not `cards_` (§7) |
 
+| *User, 2026-09-20:* `Down` moved to the card on the right, not the one below — arrows stepped document order, so on three columns they crossed the top row before descending and the card beneath the cursor was unreachable | medium | fixed — `BoardLayout::neighbour()`; Up/Down within the column, Left/Right across (§7) |
+
 **Known and not yet fixed**, carried forward honestly:
 
 - The lightbox does not page across a buffer's images with ←/→; each image is
@@ -1869,6 +1897,8 @@ not fail.**
 - The multi-instance guard is still best-effort; a real `flock` on the data
   directory would be the correct mutex.
 - The undo toast still replaces rather than stacks, and does not name the buffer.
+- The lightbox's ←/→ gap above is now the only place arrow keys do not do the
+  obvious thing; the board itself walks by geometry (§7).
 
 ---
 

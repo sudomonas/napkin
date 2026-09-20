@@ -79,7 +79,10 @@ public:
     // canvas verb acts on the selection, so without a keyboard route to the
     // selection a keyboard user could select all or nothing — which is how this
     // shipped until an audit drove it and found nothing worked.
-    void moveCursor(int delta, Qt::KeyboardModifiers modifiers);
+    // Arrows move by geometry: Up/Down stay in the column, Left/Right cross to
+    // the neighbouring one. Tab is untouched and still walks card to card
+    // through Qt's focus chain, which is the "visit everything once" route.
+    void moveCursorSpatially(BoardLayout::Step step, Qt::KeyboardModifiers modifiers);
     void setCursorTo(int index, Qt::KeyboardModifiers modifiers);
     int  cursorIndex() const { return cursor_; }
 

@@ -30,6 +30,20 @@ public:
 
     int columnWidth() const { return columnWidth_; }
     int totalHeight() const { return totalHeight_; }
+    int columnCount() const { return columns_; }
+
+    // Which column a slot was dealt into. Exact, not inferred: rebuild() places
+    // every card at kPadX + col * (columnWidth + gap).
+    int columnOf(int index) const;
+
+    enum class Step { Up, Down, Left, Right };
+    // Where an arrow key lands, or -1 when the board ends that way.
+    //
+    // Masonry deals cards into explicit columns, so "the card below this one"
+    // is a fact about the layout rather than a nearest-neighbour guess. Up and
+    // Down stay in the column; Left and Right cross to the neighbouring column
+    // and land on whichever card best lines up with this one.
+    int neighbour(int index, Step step) const;
 
     const std::vector<Slot>& placements() const { return placements_; }
     std::vector<int> indicesIn(const QRect& visible, int overscan) const;
@@ -57,6 +71,7 @@ private:
 
     std::vector<Slot> placements_;
     int viewportWidth_ = 0;
+    int columns_ = 1;
     int columnWidth_ = 0;
     int totalHeight_ = 0;
     QFont* body_ = nullptr;
