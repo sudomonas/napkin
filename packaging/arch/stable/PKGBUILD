@@ -15,7 +15,7 @@
 # To move to a new release: bump pkgver, then `updpkgsums` (or makepkg -g).
 
 pkgname=napkin
-pkgver=0.1.4
+pkgver=0.1.5
 pkgrel=1
 pkgdesc='A persistent scratch surface for text and images, kept only on this machine'
 arch=('x86_64')
@@ -26,7 +26,7 @@ depends=('qt6-base' 'qt6-svg' 'qt6-imageformats' 'sqlite' 'hicolor-icon-theme')
 makedepends=('cmake' 'ninja')
 conflicts=('napkin-git')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('7d16463c3bba9fda64f310faf225d4decfeaff996c90258e7b46d9c67db2c2a6')
+sha256sums=('923e0189ac116e5ece267752760b6dcdfbefae32242abe0e4ba7b3cc8ea34f32')
 
 # How many compiles at once. MAKEFLAGS=-jN wins, as makepkg users expect.
 # Otherwise one per free gigabyte, capped at the core count: each compile of a
@@ -44,6 +44,10 @@ _jobs() {
 }
 
 build() {
+  # makepkg reuses $srcdir between runs, and CMake refuses to reuse a cache
+  # generated for a different source path -- which is exactly what a version
+  # bump produces. A clean chroot never sees it; a local rebuild always does.
+  rm -rf build
   # None: take makepkg's CFLAGS/CXXFLAGS rather than CMakeLists' default.
   cmake -S "$pkgname-$pkgver" -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=None \

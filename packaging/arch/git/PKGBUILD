@@ -50,6 +50,10 @@ _jobs() {
 }
 
 build() {
+  # makepkg reuses $srcdir between runs, and CMake refuses to reuse a cache
+  # generated for a different source path -- which is exactly what a version
+  # bump produces. A clean chroot never sees it; a local rebuild always does.
+  rm -rf build
   # None: take makepkg's CFLAGS/CXXFLAGS rather than CMakeLists' default.
   cmake -S "$_pkgname" -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=None \
