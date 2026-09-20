@@ -871,6 +871,20 @@ three ways to copy — the footer button, `Ctrl+C`, and the context menu — and
 > and so never saw it. It is now a data-driven test over every route, and
 > reverting the fix fails the ones that were broken while the button still passes.
 
+**A copy that failed never says it worked, and a cut that cannot copy removes
+nothing.** One image whose blob has gone from disk is the only case where the
+clipboard cannot be written, and both verbs go through the same
+`putSelectionOnClipboard()` so they cannot disagree about what success means.
+
+> **Corrected.** The copy fell through to the text path, put the literal
+> `[image]` on the clipboard and said "Copied". The cut did the same and then
+> **deleted the item anyway** — a move that lost the thing being moved, leaving
+> the picture in the trash and the word `[image]` on the clipboard.
+
+A **cut answers with one message, not two.** It used to call `copySelection()`,
+which announced "Copied" before the window's own "N items cut" replaced it in
+the same call stack — so a single card flashed "Copied" as it disappeared.
+
 An acknowledgement **never cancels a live Undo offer.** `inform()` used to be
 spelled `offer(message, nullptr)`, so a copy — which destroys nothing — threw
 away the Undo for a delete made two seconds earlier, and `Ctrl+Z` then did
@@ -1880,6 +1894,8 @@ not fail.**
 | `Ctrl+A` selected only the virtualized visible band: on a 60-item napkin it selected 13, copied 13, and `Ctrl+A`+`Delete` left 47 items behind silently | **critical** | fixed — selection, cursor and copy are computed over `items_`, not `cards_` (§7) |
 
 | *User, 2026-09-20:* `Down` moved to the card on the right, not the one below — arrows stepped document order, so on three columns they crossed the top row before descending and the card beneath the cursor was unreachable | medium | fixed — `BoardLayout::neighbour()`; Up/Down within the column, Left/Right across (§7) |
+
+| Copying a lone image whose blob was gone put the literal `[image]` on the clipboard and reported "Copied"; **cutting it did the same and deleted the item anyway** | high | fixed — one `putSelectionOnClipboard()` for both verbs; a cut that cannot copy removes nothing (§7) |
 
 **Known and not yet fixed**, carried forward honestly:
 

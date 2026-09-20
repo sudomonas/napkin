@@ -144,7 +144,8 @@ signals:
     void selectionChanged();
     void filterChanged();
     // Something happened that no card can speak for on its own — a copy of
-    // several items at once. The window puts it in the toast.
+    // several items at once, or of one whose card is scrolled out of the band.
+    // The window puts it in the toast.
     void announced(const QString& message);
 
 protected:
@@ -175,6 +176,10 @@ private:
     // virtualized band and so has no widget at all.
     ItemCard* liveCardAt(int index) const;
     QString   plainTextFor(const Item& item) const;
+    // Writes the clipboard, silently. False means it did not: a lone image
+    // whose blob is gone. Shared by copy and cut so the two cannot disagree
+    // about what "it worked" means.
+    bool      putSelectionOnClipboard(const QList<ItemId>& ids);
     ItemCard* cardAt(const QPoint& viewportPos) const;
     void applySelection(ItemId id, Qt::KeyboardModifiers modifiers);
     void relayout();

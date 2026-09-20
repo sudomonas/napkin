@@ -633,27 +633,26 @@ QString ItemCanvas::plainTextFor(const Item& item) const
     return item.text;
 }
 
-void ItemCanvas::copySelection()
+// Puts the selection on the clipboard and says nothing about it. False means
+// the clipboard was NOT written — which happens in exactly one case: a lone
+// image whose blob has gone missing from disk.
+bool ItemCanvas::putSelectionOnClipboard(const QList<ItemId>& ids)
 {
-    const auto ids = selection();
-    if (ids.isEmpty()) return;
-
     // A single image goes to the clipboard as an image, so it can be pasted
     // into anything. Anything else goes as text, joined in document order.
+    // Driven from items_, not cards_: an image scrolled out of the band has no
+    // card, and copying it used to fall through to its filename as text.
     if (ids.size() == 1) {
         for (const auto& item : items_) {
             if (item.id != ids.first() || item.type != ItemType::Image) continue;
             const QString path = blobs_.pathFor(item.blobHash, item.mime);
             QImage image(path);
-            if (!image.isNull()) {
-                auto* mime = new QMimeData;
-                mime->setImageData(image);
-                mime->setUrls({QUrl::fromLocalFile(path)});
-                QApplication::clipboard()->setMimeData(mime);
-                acknowledgeCopy(ids);
-                return;
-            }
-            break;
+            if (image.isNull()) return false;
+            auto* mime = new QMimeData;
+            mime->setImageData(image);
+            mime->setUrls({QUrl::fromLocalFile(path)});
+            QApplication::clipboard()->setMimeData(mime);
+            return true;
         }
     }
 
@@ -661,15 +660,40 @@ void ItemCanvas::copySelection()
     for (const auto& item : items_)
         if (item.id != kNoItem && selected_.contains(item.id)) parts << plainTextFor(item);
     QApplication::clipboard()->setText(parts.join(QStringLiteral("\n\n")));
+    return true;
+}
+
+void ItemCanvas::copySelection()
+{
+    const auto ids = selection();
+    if (ids.isEmpty()) return;
+    if (!putSelectionOnClipboard(ids)) {
+        // The one case where a copy genuinely fails. It used to fall through to
+        // the text path, put the literal "[image]" on the clipboard, and then
+        // say "Copied": a failure reported as success, which is the single
+        // worst thing an acknowledgement can do.
+        emit announced(tr("That image is missing, so nothing was copied"));
+        return;
+    }
     acknowledgeCopy(ids);
 }
 
 void ItemCanvas::cutSelection()
 {
-    if (selected_.isEmpty()) return;
-    copySelection();
     const auto ids = selection();
-    if (!ids.isEmpty()) emit cutRequested(ids);
+    if (ids.isEmpty()) return;
+
+    // No "Copied" first. The window answers a cut with its own message, which
+    // carries Undo, and two messages for one action means the first is never
+    // read — on a single card it also flashed on a card about to disappear.
+    if (!putSelectionOnClipboard(ids)) {
+        // And nothing is removed. A cut that could not copy used to delete the
+        // item anyway, leaving the clipboard holding the text "[image]" and the
+        // picture in the trash: a move that lost the thing being moved.
+        emit announced(tr("That image is missing, so nothing was cut"));
+        return;
+    }
+    emit cutRequested(ids);
 }
 
 void ItemCanvas::deleteSelection()

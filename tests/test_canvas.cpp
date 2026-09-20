@@ -189,6 +189,84 @@ private slots:
         QVERIFY(text.contains(QStringLiteral("and a closing note")));
     }
 
+    // --- the one copy that can genuinely fail --------------------------------
+    // A lone image whose blob has gone from disk. The copy used to fall through
+    // to the text path, put the literal "[image]" on the clipboard, and say
+    // "Copied" — a failure reported as success.
+    void copyingAnImageWhoseBlobIsGoneSaysSoInsteadOfClaimingSuccess()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        const auto stored = f.blobs.store(png(80, 60, Qt::red));
+        QVERIFY(stored.ok);
+        f.service.appendTo(id, Item::makeImage(stored.hash, 80, 60, stored.byteSize,
+                                               QStringLiteral("gone.png"), stored.mime));
+        f.model()->reload();
+        f.select(id);
+
+        QVERIFY(QFile::remove(f.blobs.pathFor(stored.hash, stored.mime)));
+        QApplication::clipboard()->setText(QStringLiteral("untouched"));
+
+        auto* image = f.canvas()->findChildren<ImageItemCard*>().first();
+        QTest::mouseClick(image, Qt::LeftButton);
+        f.canvas()->copySelection();
+
+        // Not the filename, and above all not "[image]" passed off as the picture.
+        QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("untouched"));
+        QString said;
+        for (auto* l : f.toast()->findChildren<QLabel*>())
+            if (!l->text().isEmpty()) said = l->text();
+        QVERIFY2(said.contains(QStringLiteral("missing")),
+                 qPrintable(QStringLiteral("said: ") + said));
+    }
+
+    // Worse for cut: it copied the placeholder text and then deleted the item
+    // anyway, so the move lost the thing being moved.
+    void cuttingAnImageWhoseBlobIsGoneRemovesNothing()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        const auto stored = f.blobs.store(png(80, 60, Qt::blue));
+        f.service.appendTo(id, Item::makeImage(stored.hash, 80, 60, stored.byteSize,
+                                               QStringLiteral("gone.png"), stored.mime));
+        f.model()->reload();
+        f.select(id);
+        QVERIFY(QFile::remove(f.blobs.pathFor(stored.hash, stored.mime)));
+
+        auto* image = f.canvas()->findChildren<ImageItemCard*>().first();
+        QTest::mouseClick(image, Qt::LeftButton);
+        f.canvas()->cutSelection();
+
+        QCOMPARE(f.items.countForBuffer(id), 1);   // still there
+        QVERIFY(!f.buffers.find(id)->inTrash());
+    }
+
+    // A cut answers with ONE message, the window's, which carries Undo. It used
+    // to announce "Copied" first, on a card that was about to disappear.
+    void cuttingDoesNotAlsoAnnounceACopy()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("first")));
+        f.service.appendTo(id, Item::makeText(QStringLiteral("second")));
+        f.model()->reload();
+        f.select(id);
+
+        f.canvas()->selectAll();
+        // Watched at the signal, not at the toast: the cut's own message
+        // replaces the copy's in the same call stack, so the final toast looks
+        // right either way and only the signal shows the second announcement.
+        QSignalSpy announcements(f.canvas(), &ItemCanvas::announced);
+        f.canvas()->cutSelection();
+
+        for (const auto& args : announcements) {
+            const QString said = args.value(0).toString();
+            QVERIFY2(!said.contains(QStringLiteral("copied"), Qt::CaseInsensitive),
+                     qPrintable(QStringLiteral("a cut reported a copy: ") + said));
+        }
+        QVERIFY2(f.toast()->hasOffer(), "a cut must still offer Undo");
+    }
+
     // --- arrows walk the board as it looks -----------------------------------
     // Down used to mean "+1 in document order", which on a masonry board is the
     // card to the RIGHT: with three columns it travelled along the top row,
