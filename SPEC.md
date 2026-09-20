@@ -1660,6 +1660,16 @@ because of the focus constraint measured in Phase 0 (below).
 > clipboard. The capture window must actually appear and take focus before
 > reading. That is acceptable — it is the interaction we want anyway — but it
 > rules out a "capture invisibly on hotkey" design, so do not plan for one.
+>
+> **This constraint was then broken by the one path that already had it.** The
+> tray's "Paste onto a new napkin" raised the window and read the clipboard in
+> the same call stack — but `activateWindow()` is a *request* to the
+> compositor, not a synchronous change, so the read happened before any focus
+> arrived and came back empty. The paste returned, having already made the
+> napkin, so the user got a blank napkin and no explanation. Anything that
+> reads the clipboard after a raise now goes through
+> `MainWindow::whenWindowIsActive()`, which polls for focus and gives up out
+> loud after a second rather than losing the paste in silence.
 
 **Drag and drop.** The item model is type-tagged and position-ordered
 specifically so a drop handler is additive: it constructs the same items paste
@@ -1791,6 +1801,10 @@ not fail.**
 | *Second test:* a napkin that began with a picture or link was titled "Image" or by its raw URL; pasting in the trash did nothing | low | fixed — titled by its first note, then its first link (short form), then its first image; paste leaves the trash as Ctrl+N does |
 
 | Only the footer button said "Copied"; `Ctrl+C` and right-click ▸ Copy were silent, so the keyboard route to the most-used verb gave no sign it had worked | medium | fixed — `copySelection()` acknowledges, so every route does; several at once say so in the toast |
+
+| The tray's **Quit Napkin** did nothing whenever the window had been closed to the tray | high | fixed — `quitNapkin()`; `close()` ends the process only via `quitOnLastWindowClosed`, which never fires for an already-hidden window (measured both ways) |
+| **File ▸ Quit** merely hid the window while the tray setting was on, because `closeEvent` hides to the tray | high | fixed — the same `quitNapkin()`, so both routes out of Napkin mean the same thing |
+| The tray's **Paste onto a new napkin** made a blank napkin and pasted nothing | high | fixed — it waits for the window to actually take focus before reading the clipboard (§17), and makes the napkin only once there is something to put on it |
 
 **Known and not yet fixed**, carried forward honestly:
 

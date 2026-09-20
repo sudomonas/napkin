@@ -32,6 +32,7 @@
 #include <QCloseEvent>
 #include <QLabel>
 #include <QAction>
+#include <memory>
 #include <QApplication>
 #include <QClipboard>
 #include <QFileDialog>
@@ -487,7 +488,7 @@ void MainWindow::buildMenuBar()
     file->addSeparator();
     auto* quit = file->addAction(tr("&Quit"));
     quit->setShortcut(QKeySequence::Quit);
-    connect(quit, &QAction::triggered, this, &QWidget::close);
+    connect(quit, &QAction::triggered, this, [this] { quitNapkin(); });
 
     // "Napkins", not "Home": the menu holds the napkin list's own actions, and
     // "All napkins" is what the trash's "Back to your napkins" returns to.
@@ -1167,7 +1168,15 @@ void MainWindow::pasteFromClipboard()
     }
 
     const auto content = readClipboard(QApplication::clipboard()->mimeData());
-    if (content.kind == ClipboardContent::Kind::None) return;
+    // A bare return here was indistinguishable from a broken application: copy
+    // a PDF in the file manager, press Ctrl+V, and Napkin did nothing and said
+    // nothing. It holds text and images and nothing else (SPEC.md §3), so when
+    // it cannot take what is on the clipboard it has to say which.
+    if (content.kind == ClipboardContent::Kind::None) {
+        toast_->inform(tr("Nothing on the clipboard that Napkin can hold — "
+                          "copy some text or an image"));
+        return;
+    }
 
     // One rule for everything on the clipboard: a paste goes into the buffer
     // you are looking at, and makes a new one only when you are looking at
@@ -1181,6 +1190,54 @@ void MainWindow::pasteFromClipboard()
         return;
     }
     if (appendTextBlock(content.text)) completePendingCut();
+}
+
+// SPEC.md §17, measured in Phase 0: **Wayland serves the clipboard only to a
+// focused client** — an unfocused one reads an empty format list. And
+// activateWindow() is a request to the compositor, not a synchronous change.
+//
+// The tray's "Paste onto a new napkin" ignored both: it raised the window, made
+// a napkin, and read the clipboard in the same call stack, before any focus had
+// arrived. The read came back empty, the paste returned, and all the user got
+// was a blank new napkin and no explanation. Napkin's own spec had recorded the
+// constraint since Phase 0; this was the one path that broke it.
+void MainWindow::whenWindowIsActive(std::function<void()> then)
+{
+    if (isActiveWindow()) { then(); return; }
+
+    // Polled rather than waiting on QEvent::WindowActivate: a compositor can
+    // refuse the activation outright, and then that event never arrives at all
+    // and the paste would be lost in silence. Give up after a second instead.
+    auto* waiting = new QTimer(this);
+    waiting->setInterval(25);
+    auto tries = std::make_shared<int>(0);
+    connect(waiting, &QTimer::timeout, this, [this, waiting, then, tries] {
+        if (!isActiveWindow() && ++*tries < 40) return;
+        waiting->stop();
+        waiting->deleteLater();
+        then();
+    });
+    waiting->start();
+}
+
+void MainWindow::pasteOntoNewNapkinFromTray()
+{
+    raiseFromOtherInstance();
+    whenWindowIsActive([this] {
+        // The napkin is made only once there is something to put on it. Making
+        // it first is what left blank napkins behind every time the clipboard
+        // held nothing Napkin could take.
+        if (readClipboard(QApplication::clipboard()->mimeData()).kind
+            == ClipboardContent::Kind::None) {
+            toast_->inform(tr("Nothing on the clipboard that Napkin can hold — "
+                              "copy some text or an image"));
+            return;
+        }
+        // The tray item promises a *new* napkin, so it asks for one; plain
+        // Ctrl+V would have appended to whichever napkin was open.
+        newDraft();
+        pasteFromClipboard();
+    });
 }
 
 // Ctrl+T, and the path every pasted text block takes.
@@ -1687,6 +1744,32 @@ bool MainWindow::event(QEvent* e)
     return QMainWindow::event(e);
 }
 
+// Quitting cannot be spelled close(), which is how it was spelled everywhere.
+//
+// Two separate reasons, and between them every route out of Napkin was broken
+// while the tray setting was on:
+//
+//   - close() ends the process only as a side effect of quitOnLastWindowClosed,
+//     and that never fires for a window that is ALREADY HIDDEN — measured, not
+//     assumed. The tray's Quit is used precisely when the window has been
+//     closed to the tray, so it did nothing at all.
+//   - closeEvent() deliberately hides to the tray instead of closing, so
+//     File ▸ Quit merely hid the window.
+//
+// close() is still how we get there, because it is what flushes unsaved text
+// and what can refuse; the quit is then explicit rather than incidental.
+bool MainWindow::quitNapkin()
+{
+    reallyQuitting_ = true;
+    if (!close()) {          // unsaved text that could not be written
+        reallyQuitting_ = false;
+        return false;
+    }
+    emit quitting();
+    QCoreApplication::quit();
+    return true;
+}
+
 void MainWindow::closeEvent(QCloseEvent* e)
 {
     // Closing with unsaved text that cannot be written would destroy it with no
@@ -1723,16 +1806,8 @@ void MainWindow::applyTraySetting()
         raiseFromOtherInstance();
         newDraft();
     });
-    connect(tray_, &TrayIcon::pasteRequested, this, [this] {
-        raiseFromOtherInstance();
-        newDraft();
-        pasteFromClipboard();
-    });
-    connect(tray_, &TrayIcon::quitRequested, this, [this] {
-        // Quit means quit, even with the tray setting on.
-        reallyQuitting_ = true;
-        close();
-    });
+    connect(tray_, &TrayIcon::pasteRequested, this, &MainWindow::pasteOntoNewNapkinFromTray);
+    connect(tray_, &TrayIcon::quitRequested, this, [this] { quitNapkin(); });
     tray_->setVisible(true);
 }
 

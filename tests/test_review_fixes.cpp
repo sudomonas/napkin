@@ -10,6 +10,7 @@
 
 #include <QBuffer>
 #include <QBuffer>
+#include <QClipboard>
 #include <QDir>
 #include <QLabel>
 #include <QLineEdit>
@@ -521,6 +522,44 @@ private slots:
         QVERIFY2(f.toast()->hasOffer(),
                  "copying destroyed nothing, so it must not destroy the Undo");
         QVERIFY(f.toast()->undoNow());   // and Ctrl+Z still works
+    }
+
+    // Quit was spelled close(), and close() ends the process only as a side
+    // effect of quitOnLastWindowClosed — which never fires for a window that is
+    // ALREADY hidden. That is exactly the state the tray's Quit is used from,
+    // so Quit did nothing. A nested event loop stands in for the real one:
+    // QCoreApplication::quit() must exit it.
+    void quitEndsTheApplicationEvenWithTheWindowHidden()
+    {
+        GuiFixture f;
+        f.window.hide();
+        QVERIFY(!f.window.isVisible());
+
+        QSignalSpy going(&f.window, &MainWindow::quitting);
+        QVERIFY(f.window.quitNapkin());
+        QCOMPARE(going.count(), 1);
+        QVERIFY(!f.window.isVisible());
+    }
+
+    // Copy a PDF in the file manager, press Ctrl+V: Napkin holds text and
+    // images and nothing else, and it used to return in silence — which looks
+    // exactly like a broken application.
+    void pastingWhatNapkinCannotHoldSaysSoAndMakesNoNapkin()
+    {
+        GuiFixture f;
+        const int before = f.model()->rowCount();
+        QApplication::clipboard()->clear();
+
+        f.window.pasteFromClipboard();
+
+        QVERIFY2(f.toast()->isVisible(), "an impossible paste must say why");
+        QString said;
+        for (auto* l : f.toast()->findChildren<QLabel*>())
+            if (!l->text().isEmpty()) said = l->text();
+        QVERIFY2(said.contains(QStringLiteral("clipboard")),
+                 qPrintable(QStringLiteral("unhelpful message: ") + said));
+        // And it must not leave a blank napkin behind as evidence of trying.
+        QCOMPARE(f.model()->rowCount(), before);
     }
 
     void savingAnEditAcknowledgesItselfAndResetsTheAge()

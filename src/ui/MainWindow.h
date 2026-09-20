@@ -61,7 +61,23 @@ public slots:
     // The undo path normally runs from the toast; tests drive it directly.
     void undoLastTrashForTest(BufferId id, bool wasKept, Timestamp modifiedAt);
     void emptyTrash();
+    // "Quit" has to end the application from wherever it is asked for. It
+    // cannot be spelled close(); see the definition. Returns whether Napkin is
+    // actually going — unsaved text that cannot be written refuses the quit,
+    // and then `quitting` is not emitted.
+    bool quitNapkin();
+
+signals:
+    // Napkin is going. It exists so that "Quit actually quits" is observable:
+    // the quit itself is a call into the application object, which a test
+    // running outside exec() cannot see happen.
+    void quitting();
+
+public:
     void pasteFromClipboard();
+    // Paste onto a new napkin, from the tray. Separate from pasteFromClipboard
+    // because the clipboard cannot be read until the window has focus.
+    void pasteOntoNewNapkinFromTray();
     void addImageFromFile();
     void openImageItem(ItemId id);
     void openRow(int row);
@@ -97,6 +113,11 @@ private:
     void openSettings();
     void goHome();
     void applyTraySetting();
+    // Runs `then` once the window has actually taken focus, or gives up after
+    // ~1s. Anything that reads the clipboard after a raise must go through
+    // this; see pasteOntoNewNapkinFromTray().
+    void whenWindowIsActive(std::function<void()> then);
+
     void exportCurrentBuffer();
     void exportEverything();
     // Both export paths end here, so the result is reported the same way and
