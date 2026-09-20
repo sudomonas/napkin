@@ -1,0 +1,8 @@
+# makepkg's workspace: the source checkout, the staging tree and the built
+# packages. All reproducible, none of it belongs in the repository — it was
+# showing up as untracked noise in every `git status`.
+src/
+pkg/
+napkin/
+*.pkg.tar.zst
+*.tar.gz

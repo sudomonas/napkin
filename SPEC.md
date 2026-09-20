@@ -743,33 +743,6 @@ is a one-off per buffer and a reasonable next target, not a correctness problem.
 - Images draw at the column width, **never upscaled**, with one caption line:
   filename or format, dimensions, size, and *animated* when it moves.
 
-
-| 1000 text items in one buffer | before | after |
-|---|---|---|
-| Live `QPlainTextEdit` widgets | 1000 | **12** |
-| Peak RSS | 365 MB | **53 MB** |
-| Per resize event | 270 ms | **31 ms** |
-| Opening the buffer | 357 ms | 165 ms |
-
-Memory is now flat in the item count — 52 MB at 50 items and 53 MB at 1000.
-Opening still scales, because measuring a thousand documents is real work; that
-is a one-off per buffer and a reasonable next target, not a correctness problem.
-
-> §12 previously claimed virtualization was "Phase 2 architecture, not Phase 10
-> polish", and argued that "retrofitting virtualization into a card list is
-> miserable" — and then the board was built with none of it. The argument was
-> right and the code ignored it. Retrofitting it was indeed miserable.
-
-> **A card's size depends on its own content and nothing else.** That is harder
-> than it sounds. The layout width is computed from the widget width **minus the
-> scrollbar extent, unconditionally** — because with an as-needed scrollbar,
-> adding one item makes the bar appear, shrinks the viewport by ~14px, changes
-> the column width and resizes *every card in the buffer*. Both halves are
-> asserted: a tall neighbour must not change a short card's height, and adding
-> twelve items must not change the width of the card that was already there.
-- Images draw at the column width, **never upscaled**, with one caption line:
-  filename or format, dimensions, size, and *animated* when it moves.
-
 ### Items are selectable objects
 
 The hard part is that a text block must be both a selectable object and an
@@ -810,7 +783,6 @@ is under it:
 > comment was right to fear. Left/Right is how you change column. On a
 > one-column board this is identical to the old behaviour, so narrow windows are
 > unchanged.
-
 
 **Three states, three treatments.** At rest: hairline border. Selected: accent
 border at 2px plus a faint tint. **Editing: accent border and no tint at all** —
@@ -861,16 +833,6 @@ and the scope is chosen by who can speak for the action.
 | One card | its own footer — `CardFooter::acknowledgeAction()` turns "Copy text" into "Copied" for 1.6s | a copy of a single item |
 | The window | the toast, via `UndoToast::inform()` — no Undo button, because nothing was destroyed | a copy of several items at once |
 
-**The acknowledgement belongs to the verb, not to a route into it.** There are
-three ways to copy — the footer button, `Ctrl+C`, and the context menu — and
-`ItemCanvas::copySelection()` is what acknowledges, so all three do.
-
-> **Corrected.** This shipped wired to the footer button's *signal*, so only the
-> button said "Copied"; `Ctrl+C` and right-click ▸ Copy were silent, which is
-> the case a keyboard user hits every time. The test covered the button alone
-> and so never saw it. It is now a data-driven test over every route, and
-> reverting the fix fails the ones that were broken while the button still passes.
-
 **A copy that failed never says it worked, and a cut that cannot copy removes
 nothing.** One image whose blob has gone from disk is the only case where the
 clipboard cannot be written, and both verbs go through the same
@@ -890,6 +852,16 @@ spelled `offer(message, nullptr)`, so a copy — which destroys nothing — thre
 away the Undo for a delete made two seconds earlier, and `Ctrl+Z` then did
 nothing. It now stands in front of the offer for 1.6s and puts it back with the
 rest of its countdown.
+
+**The acknowledgement belongs to the verb, not to a route into it.** There are
+three ways to copy — the footer button, `Ctrl+C`, and the context menu — and
+`ItemCanvas::copySelection()` is what acknowledges, so all three do.
+
+> **Corrected.** This shipped wired to the footer button's *signal*, so only the
+> button said "Copied"; `Ctrl+C` and right-click ▸ Copy were silent, which is
+> the case a keyboard user hits every time. The test covered the button alone
+> and so never saw it. It is now a data-driven test over all three routes, and
+> reverting the fix fails the two that were broken while the button still passes.
 
 ### One rule for paste
 
@@ -1086,7 +1058,8 @@ napkin/
 │   ├── data/      Database, Migrations, BufferRepository, ItemRepository, Fts
 │   ├── media/     BlobStore, Thumbnailer
 │   └── ui/        MainWindow, BufferListView, BufferCard, InlineEditor, SearchBar
-├── resources/     icons, napkin.desktop, qss themes
+├── resources/     icons, io.github.sudomonas.Napkin.{desktop,metainfo.xml}
+├── packaging/     Flatpak manifest; arch/stable (napkin) and arch/git (napkin-git)
 └── tests/
 ```
 
@@ -1713,15 +1686,40 @@ is no build-time image dependency.
 > box-blurred three times at radius side/45, dropped side/30, near-black at
 > 42%. Without the shadow a white napkin all but vanished at 16–22 px on a
 > light panel. The content is ~375px across, so the 512px icon is slightly
-> upscaled; a larger original would make it crisper. `resources/napkin.desktop` passes
-`desktop-file-validate`. `install()` puts the binary, the desktop entry and the
-icons where XDG expects them, verified by installing to a scratch prefix. The
-icons are also compiled into the binary, so a build run straight out of the
-source tree still has a window and taskbar icon — `setDesktopFileName("napkin")`
-previously promised the compositor a file that existed nowhere.
+> upscaled; a larger original would make it crisper.
 
-**Still outstanding:** no CI, no Flatpak or AppImage, no `.desktop` MIME
-association, and no release process.
+`resources/io.github.sudomonas.Napkin.desktop` passes `desktop-file-validate`.
+`install()` puts the binary, the desktop entry and the icons where XDG expects
+them, verified by installing to a scratch prefix. The icons are also compiled
+into the binary, so a build run straight out of the source tree still has a
+window and taskbar icon — `setDesktopFileName()` previously promised the
+compositor a file that existed nowhere, and the name it passes, the `.desktop`
+basename and the app id must stay identical or Wayland gives the window no
+taskbar identity.
+
+> **Corrected, 2026-09-20.** This section said *"no CI, no Flatpak or AppImage,
+> no `.desktop` MIME association, and no release process"* long after three of
+> those four had shipped. A status list that is not re-read is worse than none:
+> it is the document asserting something false about itself.
+
+**Done since:**
+
+| | |
+|---|---|
+| CI | `.github/workflows/ci.yml` — Linux (`ubuntu-24.04`) and Windows (`windows-2022`) on every push |
+| Release process | `.github/workflows/release.yml` on a tag push: `appimage`, `windows`, `publish`. Five releases, v0.1.0 → v0.1.4 |
+| AppImage | built and published; `ubuntu-22.04` deliberately, being the oldest glibc, so the bundle runs on more |
+| Windows | `napkin-vX.Y.Z-windows-x64.zip` published alongside |
+| Arch | `packaging/arch/stable` (`napkin`, from the release tarball) and `packaging/arch/git` (`napkin-git`, from master). The suffix is an Arch requirement for a VCS package, and dropping it is what let a stale `/usr/bin/napkin` shadow newer local builds |
+
+**Still outstanding, and accurate as of 2026-09-20:**
+
+- **No `.desktop` MIME association.** The entry has no `MimeType=` line, so
+  Napkin is not offered as a handler for anything.
+- **The Flatpak is written but never built.** `packaging/io.github.sudomonas.Napkin.yml`
+  exists and is deliberately scoped — no `--share=network`, no filesystem access
+  beyond the app's own data (§11) — but no workflow builds it and it is not on
+  Flathub. A manifest nothing exercises is a claim, not a package.
 
 ---
 
@@ -1912,7 +1910,11 @@ not fail.**
   store will stall the window during *Empty trash*.
 - The multi-instance guard is still best-effort; a real `flock` on the data
   directory would be the correct mutex.
-- The undo toast still replaces rather than stacks, and does not name the buffer.
+- One **offer** still replaces another rather than stacking, and does not name
+  the buffer: two deletes in quick succession leave only the second undoable,
+  and the blobs the first was protecting stay pinned until the survivor expires.
+  (An *informational* message no longer does this — it is held in front of a
+  live offer and puts it back; see §7.)
 - The lightbox's ←/→ gap above is now the only place arrow keys do not do the
   obvious thing; the board itself walks by geometry (§7).
 

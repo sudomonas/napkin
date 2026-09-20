@@ -1,0 +1,66 @@
+# Maintainer: sudomonas <37283091+sudomonas@users.noreply.github.com>
+#
+# Napkin, pinned to a published release. This is the one to install:
+#   makepkg -si
+# and remove with:
+#   sudo pacman -R napkin
+#
+# ../git builds whatever master happens to be. It is called napkin-git because
+# Arch requires the suffix on a VCS package, and a package named plain "napkin"
+# that tracked master would be misdescribing itself — you could not tell from
+# the name, or from pacman, which code you were running. That distinction is
+# not pedantry: it is exactly the confusion that had a stale /usr/bin/napkin
+# shadowing newer local builds.
+#
+# To move to a new release: bump pkgver, then `updpkgsums` (or makepkg -g).
+
+pkgname=napkin
+pkgver=0.1.4
+pkgrel=1
+pkgdesc='A persistent scratch surface for text and images, kept only on this machine'
+arch=('x86_64')
+url='https://github.com/sudomonas/napkin'
+license=('MIT')
+# qt6-svg renders SVG pastes and the toolbar icons; qt6-imageformats reads WebP.
+depends=('qt6-base' 'qt6-svg' 'qt6-imageformats' 'sqlite' 'hicolor-icon-theme')
+makedepends=('cmake' 'ninja')
+conflicts=('napkin-git')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('7d16463c3bba9fda64f310faf225d4decfeaff996c90258e7b46d9c67db2c2a6')
+
+# How many compiles at once. MAKEFLAGS=-jN wins, as makepkg users expect.
+# Otherwise one per free gigabyte, capped at the core count: each compile of a
+# Qt test with debug info needs most of a gigabyte, and Ninja's own default (one
+# per core, plus two) had the kernel killing compilers on an 8-core, 7.5 GB box.
+_jobs() {
+  local j
+  j=$(grep -oE -- '-j ?[0-9]+' <<<"${MAKEFLAGS:-}" | grep -oE '[0-9]+' | head -1)
+  if [[ -z $j ]]; then
+    j=$(awk '/^MemAvailable:/ { print int($2 / 1048576) }' /proc/meminfo)
+    (( j < 1 )) && j=1
+    (( j > $(nproc) )) && j=$(nproc)
+  fi
+  echo "$j"
+}
+
+build() {
+  # None: take makepkg's CFLAGS/CXXFLAGS rather than CMakeLists' default.
+  cmake -S "$pkgname-$pkgver" -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=None \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -Wno-dev
+  cmake --build build --parallel "$(_jobs)"
+}
+
+check() {
+  # The GUI suites run on Qt's offscreen platform (set per test in
+  # CMakeLists), so this needs no display, as in a clean chroot.
+  ctest --test-dir build --output-on-failure
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install build
+  install -Dm644 "$pkgname-$pkgver/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$pkgname-$pkgver/resources/icons/lucide/LICENSE" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE.lucide"
+}

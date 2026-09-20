@@ -7,12 +7,14 @@
 # Everything goes under /usr, managed by pacman: no files in ~/.local, and the
 # launcher entry works however Plasma was started (it finds /usr/bin on any PATH).
 #
-# A napkin package pinned to a release tag belongs beside this once a release is
-# published; until then -git is the honest name for "whatever master is".
+# The release-pinned package now lives beside this one, in ../stable, and is
+# the one to install. This tracks master, which is what the -git suffix means
+# and why it stays: Arch requires it on a VCS package, and a package called
+# plain "napkin" that built from master could not be told apart from a release.
 
 pkgname=napkin-git
 _pkgname=napkin
-pkgver=0.1.0.r0.g0000000
+pkgver=0.1.0.r16.ga439610
 pkgrel=1
 pkgdesc='A persistent scratch surface for text and images, kept only on this machine'
 arch=('x86_64')
@@ -22,7 +24,7 @@ license=('MIT')
 depends=('qt6-base' 'qt6-svg' 'qt6-imageformats' 'sqlite' 'hicolor-icon-theme')
 makedepends=('cmake' 'ninja' 'git')
 provides=("$_pkgname")
-conflicts=("$_pkgname")
+conflicts=("$_pkgname")   # ../stable installs that name
 source=("$_pkgname::git+$url.git")
 sha256sums=('SKIP')
 
