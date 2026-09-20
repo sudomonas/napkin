@@ -189,6 +189,54 @@ private slots:
         QVERIFY(text.contains(QStringLiteral("and a closing note")));
     }
 
+    // The board is virtualized: only the visible band has card widgets. Every
+    // selection verb used to be written against `cards_`, so "select all" meant
+    // "select what happens to be on screen" — and Ctrl+A then Ctrl+C copied a
+    // fraction of a long napkin while reporting a confident count.
+    void selectAllCoversTheWholeNapkinNotOnlyWhatIsOnScreen()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (int i = 0; i < 60; ++i)
+            f.service.appendTo(id, Item::makeText(QStringLiteral("item %1 here").arg(i)));
+        f.model()->reload();
+        f.select(id);
+
+        // If the board is not actually virtualizing, this test proves nothing.
+        QVERIFY2(f.canvas()->findChildren<TextItemCard*>().size() < 60,
+                 "the board held every card, so the band cannot be the bug");
+
+        f.canvas()->selectAll();
+        QCOMPARE(f.canvas()->selection().size(), 60);
+
+        f.canvas()->copySelection();
+        const QString copied = QApplication::clipboard()->text();
+        for (int i = 0; i < 60; ++i)
+            QVERIFY2(copied.contains(QStringLiteral("item %1 here").arg(i)),
+                     qPrintable(QStringLiteral("item %1 was selected but not copied").arg(i)));
+    }
+
+    // Delete after Ctrl+A had the same root: it removed only the band, so 47 of
+    // 60 items quietly survived a "delete everything". Deleting every item is
+    // documented to trash the napkin whole (§6), which is the tell: before the
+    // fix the napkin stayed live because 47 items were still on it.
+    void deleteAfterSelectAllTakesTheWholeNapkin()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (int i = 0; i < 60; ++i)
+            f.service.appendTo(id, Item::makeText(QStringLiteral("item %1").arg(i)));
+        f.model()->reload();
+        f.select(id);
+        QVERIFY(!f.buffers.find(id)->inTrash());
+
+        f.canvas()->selectAll();
+        f.canvas()->deleteSelection();
+
+        QVERIFY2(f.buffers.find(id)->inTrash(),
+                 "items survived a select-all delete, so the napkin stayed live");
+    }
+
     void deletingSelectedItemsRemovesThemFromTheBuffer()
     {
         GuiFixture f;

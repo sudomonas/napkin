@@ -699,6 +699,51 @@ shared `QTextDocument`, images from the dimensions already stored in the row. So
 the whole board's geometry is known without constructing anything, and only the
 cards inside the visible band plus an overscan actually exist.
 
+**The board is not its cards, and index space is the whole napkin.** This is the
+invariant virtualization imposes on everything else, and it was not held:
+
+> **Corrected.** Every selection verb was written against `cards_` — the band —
+> rather than `items_`. Measured on a 60-item napkin whose band held 13:
+> `Ctrl+A` selected **13**, `Ctrl+C` copied those 13 while reporting a confident
+> count, and `Ctrl+A` then `Delete` destroyed 13 and left **47** items behind
+> without a word. `cursor_` was worse than wrong, it was *two* things:
+> `syncVisibleCards()` read it as a board index while `applySelection()` wrote a
+> band index, so the focus ring drew on the wrong card whenever the band did not
+> start at the top. `End` stopped at the last card that happened to exist.
+>
+> Selection, the cursor and copying are now computed over `items_`; `cards_` is
+> only what gets *drawn*. `liveCardAt()` returns null for an item outside the
+> band and callers cope, `plainTextFor()` falls back to the item when there is
+> no card to ask, and `setCursorTo()` scrolls by the board's slot geometry so it
+> can move to an item whose widget does not exist yet.
+
+| 1000 text items in one buffer | before | after |
+|---|---|---|
+| Live `QPlainTextEdit` widgets | 1000 | **12** |
+| Peak RSS | 365 MB | **53 MB** |
+| Per resize event | 270 ms | **31 ms** |
+| Opening the buffer | 357 ms | 165 ms |
+
+Memory is now flat in the item count — 52 MB at 50 items and 53 MB at 1000.
+Opening still scales, because measuring a thousand documents is real work; that
+is a one-off per buffer and a reasonable next target, not a correctness problem.
+
+> §12 previously claimed virtualization was "Phase 2 architecture, not Phase 10
+> polish", and argued that "retrofitting virtualization into a card list is
+> miserable" — and then the board was built with none of it. The argument was
+> right and the code ignored it. Retrofitting it was indeed miserable.
+
+> **A card's size depends on its own content and nothing else.** That is harder
+> than it sounds. The layout width is computed from the widget width **minus the
+> scrollbar extent, unconditionally** — because with an as-needed scrollbar,
+> adding one item makes the bar appear, shrinks the viewport by ~14px, changes
+> the column width and resizes *every card in the buffer*. Both halves are
+> asserted: a tall neighbour must not change a short card's height, and adding
+> twelve items must not change the width of the card that was already there.
+- Images draw at the column width, **never upscaled**, with one caption line:
+  filename or format, dimensions, size, and *animated* when it moves.
+
+
 | 1000 text items in one buffer | before | after |
 |---|---|---|
 | Live `QPlainTextEdit` widgets | 1000 | **12** |
@@ -1805,6 +1850,8 @@ not fail.**
 | The tray's **Quit Napkin** did nothing whenever the window had been closed to the tray | high | fixed — `quitNapkin()`; `close()` ends the process only via `quitOnLastWindowClosed`, which never fires for an already-hidden window (measured both ways) |
 | **File ▸ Quit** merely hid the window while the tray setting was on, because `closeEvent` hides to the tray | high | fixed — the same `quitNapkin()`, so both routes out of Napkin mean the same thing |
 | The tray's **Paste onto a new napkin** made a blank napkin and pasted nothing | high | fixed — it waits for the window to actually take focus before reading the clipboard (§17), and makes the napkin only once there is something to put on it |
+
+| `Ctrl+A` selected only the virtualized visible band: on a 60-item napkin it selected 13, copied 13, and `Ctrl+A`+`Delete` left 47 items behind silently | **critical** | fixed — selection, cursor and copy are computed over `items_`, not `cards_` (§7) |
 
 **Known and not yet fixed**, carried forward honestly:
 

@@ -168,6 +168,10 @@ private slots:
 private:
     void wireCard(ItemCard* card);
     void acknowledgeCopy(const QList<ItemId>& ids);
+    // The card for a BOARD index, or null when that item is outside the
+    // virtualized band and so has no widget at all.
+    ItemCard* liveCardAt(int index) const;
+    QString   plainTextFor(const Item& item) const;
     ItemCard* cardAt(const QPoint& viewportPos) const;
     void applySelection(ItemId id, Qt::KeyboardModifiers modifiers);
     void relayout();

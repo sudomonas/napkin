@@ -414,16 +414,14 @@ void ItemCanvas::applySelection(ItemId id, Qt::KeyboardModifiers modifiers)
         if (selected_.contains(id)) selected_.remove(id);
         else { selected_.insert(id); anchor_ = id; }
     } else if ((modifiers & Qt::ShiftModifier) && anchor_ != kNoItem) {
-        int from = -1, to = -1;
-        for (size_t i = 0; i < cards_.size(); ++i) {
-            if (cards_[i]->itemId() == anchor_) from = int(i);
-            if (cards_[i]->itemId() == id) to = int(i);
-        }
+        // Over the board, not the band: a range whose anchor had scrolled out
+        // of existence used to find no `from` and silently extend nothing.
+        const int from = indexOf(anchor_);
+        const int to   = indexOf(id);
         if (from >= 0 && to >= 0) {
             selected_.clear();
             for (int i = std::min(from, to); i <= std::max(from, to); ++i)
-                if (cards_[size_t(i)]->itemId() != kNoItem)
-                    selected_.insert(cards_[size_t(i)]->itemId());
+                if (items_[size_t(i)].id != kNoItem) selected_.insert(items_[size_t(i)].id);
         }
     } else {
         // Uniform: a single click selects, whatever the item is.
@@ -432,12 +430,12 @@ void ItemCanvas::applySelection(ItemId id, Qt::KeyboardModifiers modifiers)
     }
 
     // Keep the keyboard cursor where the mouse just acted, so the two never
-    // disagree about "the current card".
-    for (size_t i = 0; i < cards_.size(); ++i) {
-        const bool here = cards_[i]->itemId() == id;
-        cards_[i]->setCurrent(here);
-        if (here) cursor_ = int(i);
-    }
+    // disagree about "the current card". A BOARD index: syncVisibleCards()
+    // always read it as one (`cursor_ == i` over placements) while this wrote a
+    // band index, so the ring was drawn on the wrong card whenever the band did
+    // not start at the top.
+    cursor_ = indexOf(id);
+    for (auto* card : cards_) card->setCurrent(card->itemId() == id);
 
     // Selecting another card is also leaving the one being edited.
     for (auto* card : textCards_)
@@ -570,11 +568,17 @@ void ItemCanvas::clearSelection()
     emit selectionChanged();
 }
 
+// THE BOARD IS NOT ITS CARDS. `cards_` holds only the virtualized visible band;
+// `items_` is the whole napkin. Every selection verb used to be written against
+// `cards_`, so "all" meant "all of the dozen currently on screen": Ctrl+A on a
+// 60-item napkin selected 13, Ctrl+C copied those 13, and Ctrl+A then Delete
+// left 47 items behind. Selection is a property of the napkin, so it is
+// computed over `items_` and merely *drawn* on whichever cards exist.
 void ItemCanvas::selectAll()
 {
     selected_.clear();
-    for (auto* card : cards_)
-        if (card->itemId() != kNoItem) selected_.insert(card->itemId());
+    for (const auto& item : items_)
+        if (item.id != kNoItem) selected_.insert(item.id);   // not the composer
     for (auto* card : cards_) card->setSelected(selected_.contains(card->itemId()));
     emit selectionChanged();
 }
@@ -583,9 +587,17 @@ QList<ItemId> ItemCanvas::selection() const
 {
     // In document order, so a copied multi-selection reads the way it looked.
     QList<ItemId> out;
-    for (auto* card : cards_)
-        if (selected_.contains(card->itemId())) out << card->itemId();
+    for (const auto& item : items_)
+        if (item.id != kNoItem && selected_.contains(item.id)) out << item.id;
     return out;
+}
+
+// The card for a board index, or null when that item is outside the band and
+// so has no widget. Callers must cope with null rather than assume a card.
+ItemCard* ItemCanvas::liveCardAt(int index) const
+{
+    if (index < 0 || index >= int(items_.size())) return nullptr;
+    return live_.value(items_[size_t(index)].id, nullptr);
 }
 
 // Copying is otherwise completely silent: nothing on screen changes, so there
@@ -602,13 +614,23 @@ void ItemCanvas::acknowledgeCopy(const QList<ItemId>& ids)
             card->acknowledge(tr("Copied"));
             return;
         }
-        // Not reachable while selection() is built from the visible band, since
-        // an id in it always has a live card. It is the correct answer for when
-        // that is fixed, and the wrong thing to do is say nothing.
+        // Reachable: selection() spans the whole board, so a selected item
+        // whose card is outside the visible band has no footer to speak on.
         emit announced(tr("Copied"));
         return;
     }
     emit announced(tr("%n items copied", nullptr, int(ids.size())));
+}
+
+// What a card would put on the clipboard for this item. The live card wins when
+// there is one: a note being edited holds text the database has not seen yet.
+// Without the fallback, copying an item outside the band copied nothing.
+QString ItemCanvas::plainTextFor(const Item& item) const
+{
+    if (auto* card = live_.value(item.id, nullptr)) return card->asPlainText();
+    if (item.type == ItemType::Image)
+        return item.sourceName.isEmpty() ? tr("[image]") : item.sourceName;
+    return item.text;
 }
 
 void ItemCanvas::copySelection()
@@ -619,26 +641,25 @@ void ItemCanvas::copySelection()
     // A single image goes to the clipboard as an image, so it can be pasted
     // into anything. Anything else goes as text, joined in document order.
     if (ids.size() == 1) {
-        for (auto* card : cards_) {
-            if (card->itemId() != ids.first()) continue;
-            if (card->item().type == ItemType::Image) {
-                const QString path = blobs_.pathFor(card->item().blobHash, card->item().mime);
-                QImage image(path);
-                if (!image.isNull()) {
-                    auto* mime = new QMimeData;
-                    mime->setImageData(image);
-                    mime->setUrls({QUrl::fromLocalFile(path)});
-                    QApplication::clipboard()->setMimeData(mime);
-                    acknowledgeCopy(ids);
-                    return;
-                }
+        for (const auto& item : items_) {
+            if (item.id != ids.first() || item.type != ItemType::Image) continue;
+            const QString path = blobs_.pathFor(item.blobHash, item.mime);
+            QImage image(path);
+            if (!image.isNull()) {
+                auto* mime = new QMimeData;
+                mime->setImageData(image);
+                mime->setUrls({QUrl::fromLocalFile(path)});
+                QApplication::clipboard()->setMimeData(mime);
+                acknowledgeCopy(ids);
+                return;
             }
+            break;
         }
     }
 
     QStringList parts;
-    for (auto* card : cards_)
-        if (selected_.contains(card->itemId())) parts << card->asPlainText();
+    for (const auto& item : items_)
+        if (item.id != kNoItem && selected_.contains(item.id)) parts << plainTextFor(item);
     QApplication::clipboard()->setText(parts.join(QStringLiteral("\n\n")));
     acknowledgeCopy(ids);
 }
@@ -660,23 +681,32 @@ void ItemCanvas::deleteSelection()
 
 void ItemCanvas::setCursorTo(int index, Qt::KeyboardModifiers modifiers)
 {
-    if (cards_.empty()) return;
-    const int target = std::clamp(index, 0, int(cards_.size()) - 1);
-    if (cursor_ >= 0 && cursor_ < int(cards_.size())) cards_[size_t(cursor_)]->setCurrent(false);
+    if (items_.empty()) return;
+    // Over the whole board: clamping to the band meant End stopped at the last
+    // card that happened to exist rather than the last item on the napkin.
+    const int target = std::clamp(index, 0, int(items_.size()) - 1);
+    if (auto* was = liveCardAt(cursor_)) was->setCurrent(false);
     cursor_ = target;
-    cards_[size_t(cursor_)]->setCurrent(true);
 
-    const ItemId id = cards_[size_t(cursor_)]->itemId();
+    const ItemId id = items_[size_t(cursor_)].id;
     if (modifiers & Qt::ShiftModifier) applySelection(id, Qt::ShiftModifier);
     else if (!(modifiers & Qt::ControlModifier)) applySelection(id, Qt::NoModifier);
 
-    ensureWidgetVisible(cards_[size_t(cursor_)], 0, kCardGap);
+    // The card the cursor just moved to may not exist yet. Scroll by the slot's
+    // geometry, which the board knows for every item; that build the card.
+    const auto& placed = board_.placements();   // not `slots`: Qt owns that word
+    if (cursor_ < int(placed.size())) {
+        const QRect r = placed[size_t(cursor_)].rect;
+        ensureVisible(r.center().x(), r.center().y(),
+                      r.width() / 2, r.height() / 2 + kCardGap);
+    }
+    if (auto* now = liveCardAt(cursor_)) now->setCurrent(true);
 }
 
 void ItemCanvas::moveCursor(int delta, Qt::KeyboardModifiers modifiers)
 {
-    if (cards_.empty()) return;
-    setCursorTo(cursor_ < 0 ? (delta > 0 ? 0 : int(cards_.size()) - 1) : cursor_ + delta,
+    if (items_.empty()) return;
+    setCursorTo(cursor_ < 0 ? (delta > 0 ? 0 : int(items_.size()) - 1) : cursor_ + delta,
                 modifiers);
 }
 
@@ -697,10 +727,10 @@ void ItemCanvas::keyPressEvent(QKeyEvent* e)
     case Qt::Key_Up:
     case Qt::Key_Left:  moveCursor(-1, e->modifiers()); return;
     case Qt::Key_Home:  setCursorTo(0, e->modifiers()); return;
-    case Qt::Key_End:   setCursorTo(int(cards_.size()) - 1, e->modifiers()); return;
+    case Qt::Key_End:   setCursorTo(int(items_.size()) - 1, e->modifiers()); return;
     case Qt::Key_Space:
-        if (cursor_ >= 0 && cursor_ < int(cards_.size())) {
-            applySelection(cards_[size_t(cursor_)]->itemId(), Qt::ControlModifier);
+        if (cursor_ >= 0 && cursor_ < int(items_.size())) {
+            applySelection(items_[size_t(cursor_)].id, Qt::ControlModifier);
             return;
         }
         break;
@@ -720,8 +750,9 @@ void ItemCanvas::keyPressEvent(QKeyEvent* e)
     // Enter edits the card under the cursor — the keyboard equivalent of the
     // double-click — or opens it, if it is an image.
     if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) {
-        if (cursor_ >= 0 && cursor_ < int(cards_.size())) {
-            ItemCard* card = cards_[size_t(cursor_)];
+        // The cursor is always on an item; the card exists because setCursorTo()
+        // scrolled to it, so there is nothing sensible to do if it does not.
+        if (auto* card = liveCardAt(cursor_)) {
             if (auto* asText = qobject_cast<TextItemCard*>(card)) { asText->beginEditing(); return; }
             emit imageActivated(card->itemId());
             return;
