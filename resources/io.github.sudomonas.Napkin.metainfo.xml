@@ -73,6 +73,20 @@
   </requires>
 
   <releases>
+    <release version="0.1.5" date="2026-09-20" type="development">
+      <description>
+        <p>Napkin now says when it has done something, and several keyboard actions that quietly did the wrong thing were corrected.</p>
+        <ul>
+          <li>Copying says "Copied" however you ask for it, not only from the button on the card.</li>
+          <li>Ctrl+A selects the whole napkin. On a long one it used to select only the cards on screen, so Ctrl+A then Delete could leave most of them behind.</li>
+          <li>Arrow keys move the way the board looks: up and down stay in a column, left and right cross to the next one.</li>
+          <li>Quit quits, including from the tray with the window already hidden.</li>
+          <li>The tray's "Paste onto a new napkin" works instead of leaving an empty napkin behind.</li>
+          <li>Pasting something Napkin cannot hold now says so rather than doing nothing.</li>
+          <li>A copy that cannot be made says so, and cutting a picture whose file is missing no longer deletes it.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.4" date="2026-09-19" type="development">
       <description>
         <p>Napkin follows the desktop switching between light and dark while it is running, without a restart.</p>
