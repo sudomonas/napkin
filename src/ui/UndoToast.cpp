@@ -6,6 +6,7 @@
 #include <QPainterPath>
 #include <QPushButton>
 #include <QTimer>
+#include <utility>
 
 namespace napkin {
 
@@ -46,25 +47,74 @@ bool UndoToast::undoNow()
     return true;
 }
 
+// An informational message reports something that destroyed nothing, so it must
+// not cancel an offer the user may still be reaching for. Spelled
+// `offer(message, nullptr)`, it did exactly that: a copy — or a paste that
+// found nothing on the clipboard — silently threw away the Undo for a delete
+// made two seconds earlier, and Ctrl+Z then did nothing. The offer is held,
+// shown over for a moment, and put back with what is left of its countdown.
 void UndoToast::inform(const QString& message)
 {
-    offer(message, nullptr);
+    if (!undo_) { offer(message, nullptr); return; }
+
+    if (heldMessage_.isEmpty()) {          // not already showing over an offer
+        heldMessage_ = message_->text();
+        heldMs_      = std::max(1, timer_->remainingTime());
+    }
+    timer_->stop();
+    message_->setText(message);
+    undoButton_->setVisible(false);
+    adjustSize();
+    reposition();
+    show();
+    raise();
+
+    if (!informTimer_) {
+        informTimer_ = new QTimer(this);
+        informTimer_->setSingleShot(true);
+        connect(informTimer_, &QTimer::timeout, this, [this] { restoreHeldOffer(); });
+    }
+    informTimer_->start(kInformMs);
+}
+
+void UndoToast::restoreHeldOffer()
+{
+    if (heldMessage_.isEmpty()) return;
+    const QString message = std::exchange(heldMessage_, QString());
+    const int remaining   = heldMs_;
+    if (!undo_) { dismiss(); return; }     // it was taken up or dropped meanwhile
+    message_->setText(message);
+    undoButton_->setVisible(true);
+    adjustSize();
+    reposition();
+    timer_->start(remaining);
 }
 
 void UndoToast::enterEvent(QEnterEvent* e)
 {
     timer_->stop();
+    if (informTimer_) informTimer_->stop();
     QWidget::enterEvent(e);
 }
 
 void UndoToast::leaveEvent(QEvent* e)
 {
-    if (isVisible()) timer_->start();
+    // While an acknowledgement is standing in front of an offer, it is the
+    // acknowledgement's short timer that has to resume — starting the offer's
+    // would leave the wrong message on screen for eight seconds.
+    if (!isVisible()) { QWidget::leaveEvent(e); return; }
+    if (!heldMessage_.isEmpty() && informTimer_) informTimer_->start(kInformMs);
+    else                                         timer_->start();
     QWidget::leaveEvent(e);
 }
 
 void UndoToast::offer(const QString& message, std::function<void()> undo)
 {
+    // A real offer supersedes anything being shown over the previous one; there
+    // is nothing left to put back.
+    heldMessage_.clear();
+    if (informTimer_) informTimer_->stop();
+
     undo_ = std::move(undo);
     undoButton_->setVisible(bool(undo_));
     message_->setText(message);
@@ -78,6 +128,8 @@ void UndoToast::offer(const QString& message, std::function<void()> undo)
 void UndoToast::dismiss()
 {
     timer_->stop();
+    heldMessage_.clear();
+    if (informTimer_) informTimer_->stop();
     const bool had = bool(undo_);
     undo_ = nullptr;
     hide();

@@ -108,10 +108,7 @@ void ItemCanvas::wireCard(ItemCard* card)
         // One mechanism at two scopes, held by an invariant: after any copy the
         // clipboard matches what is visibly selected.
         applySelection(id, Qt::NoModifier);
-        copySelection();
-        // Copying is otherwise completely silent — nothing on screen changes,
-        // so there is no way to know it worked.
-        if (auto* c = live_.value(id, nullptr)) c->acknowledge(tr("Copied"));
+        copySelection();   // which is also what acknowledges it
     });
     connect(card, &ItemCard::escaped, this, [this, card] {
         applySelection(card->itemId(), Qt::NoModifier);
@@ -591,7 +588,30 @@ QList<ItemId> ItemCanvas::selection() const
     return out;
 }
 
-void ItemCanvas::copySelection() const
+// Copying is otherwise completely silent: nothing on screen changes, so there
+// is no way to know it worked. The acknowledgement belongs to the verb, not to
+// any one route into it. Wired to the footer button's signal, as it first
+// shipped, Ctrl+C and the context menu stayed silent.
+void ItemCanvas::acknowledgeCopy(const QList<ItemId>& ids)
+{
+    // A single card says so on itself, on the button that was pressed. Several
+    // at once have no card to speak for them — and flashing all of them would
+    // be a light show — so the count goes to the window's toast.
+    if (ids.size() == 1) {
+        if (auto* card = live_.value(ids.first(), nullptr)) {
+            card->acknowledge(tr("Copied"));
+            return;
+        }
+        // Not reachable while selection() is built from the visible band, since
+        // an id in it always has a live card. It is the correct answer for when
+        // that is fixed, and the wrong thing to do is say nothing.
+        emit announced(tr("Copied"));
+        return;
+    }
+    emit announced(tr("%n items copied", nullptr, int(ids.size())));
+}
+
+void ItemCanvas::copySelection()
 {
     const auto ids = selection();
     if (ids.isEmpty()) return;
@@ -609,6 +629,7 @@ void ItemCanvas::copySelection() const
                     mime->setImageData(image);
                     mime->setUrls({QUrl::fromLocalFile(path)});
                     QApplication::clipboard()->setMimeData(mime);
+                    acknowledgeCopy(ids);
                     return;
                 }
             }
@@ -619,6 +640,7 @@ void ItemCanvas::copySelection() const
     for (auto* card : cards_)
         if (selected_.contains(card->itemId())) parts << card->asPlainText();
     QApplication::clipboard()->setText(parts.join(QStringLiteral("\n\n")));
+    acknowledgeCopy(ids);
 }
 
 void ItemCanvas::cutSelection()

@@ -17,6 +17,10 @@ class UndoToast : public QWidget {
     Q_OBJECT
 public:
     static constexpr int kVisibleMs = 8000;
+    // A message with nothing to undo is an acknowledgement, not an offer, so it
+    // shows for about as long as a card's own flash rather than for eight
+    // seconds — and never for longer than the offer it is standing in front of.
+    static constexpr int kInformMs = 1600;
 
     explicit UndoToast(QWidget* parent = nullptr);
 
@@ -49,10 +53,18 @@ protected:
     void leaveEvent(QEvent* e) override;
 
 private:
+    // Puts back the offer an inform() was shown over, with the rest of its
+    // countdown. A no-op when nothing was held.
+    void restoreHeldOffer();
+
     QLabel*      message_ = nullptr;
     QPushButton* undoButton_ = nullptr;
     QTimer*      timer_   = nullptr;
+    QTimer*      informTimer_ = nullptr;
     std::function<void()> undo_;
+    // The offer currently standing behind an informational message, if any.
+    QString heldMessage_;
+    int     heldMs_ = 0;
 };
 
 }  // namespace napkin

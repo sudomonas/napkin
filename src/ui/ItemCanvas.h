@@ -89,7 +89,8 @@ public:
     void selectAll();
 
     // Clipboard and editing verbs over the current selection.
-    void copySelection() const;
+    // Not const: a copy acknowledges itself on the card it took.
+    void copySelection();
     void cutSelection();       // copies, then asks for removal
     void deleteSelection();
 
@@ -139,6 +140,9 @@ signals:
     void cutRequested(const QList<ItemId>& ids);   // copied first, then removed
     void selectionChanged();
     void filterChanged();
+    // Something happened that no card can speak for on its own — a copy of
+    // several items at once. The window puts it in the toast.
+    void announced(const QString& message);
 
 protected:
     void mousePressEvent(QMouseEvent* e) override;
@@ -163,6 +167,7 @@ private slots:
 
 private:
     void wireCard(ItemCard* card);
+    void acknowledgeCopy(const QList<ItemId>& ids);
     ItemCard* cardAt(const QPoint& viewportPos) const;
     void applySelection(ItemId id, Qt::KeyboardModifiers modifiers);
     void relayout();

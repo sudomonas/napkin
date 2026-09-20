@@ -412,8 +412,23 @@ private slots:
     }
 
     // --- feedback the user can see -------------------------------------------
+    // There are three routes to a copy and they must all say so. The
+    // acknowledgement first shipped wired to the footer button's SIGNAL, which
+    // left Ctrl+C and the context menu silent — so the routes are enumerated
+    // here rather than the verb being tested once.
+    void copyingAcknowledgesItself_data()
+    {
+        QTest::addColumn<QString>("route");
+        QTest::newRow("footer button")   << QStringLiteral("button");
+        QTest::newRow("Ctrl+C")          << QStringLiteral("key");
+        QTest::newRow("Ctrl+C by focus") << QStringLiteral("focus");
+        QTest::newRow("context menu")    << QStringLiteral("verb");
+    }
+
     void copyingAcknowledgesItself()
     {
+        QFETCH(QString, route);
+
         GuiFixture f;
         const auto id = f.buffers.create();
         f.service.appendTo(id, Item::makeText(QStringLiteral("copy me")));
@@ -423,13 +438,89 @@ private slots:
         auto* card = f.canvas()->findChildren<TextItemCard*>().first();
         auto* footer = card->findChild<CardFooter*>();
         QVERIFY(footer);
-        emit card->copyRequested(card->itemId());
+
+        if (route == QStringLiteral("button")) {
+            emit card->copyRequested(card->itemId());
+        } else if (route == QStringLiteral("focus")) {
+            // The others hand the key straight to the canvas, which proves the
+            // handler works but NOT that a keypress ever reaches it. Here the
+            // card is clicked and the key goes to whatever actually holds
+            // focus, so the walk up the parent chain is exercised too.
+            // window()->focusWidget(), not QApplication::focusWidget(), which
+            // is null for a window no headless platform can activate.
+            QTest::mouseClick(card, Qt::LeftButton);
+            QWidget* focus = f.window.focusWidget();
+            QVERIFY2(focus, "clicking a card left the keyboard nowhere");
+            QTest::keyClick(focus, Qt::Key_C, Qt::ControlModifier);
+        } else {
+            // Both other routes act on the selection, so there has to be one.
+            f.canvas()->setCursorTo(0, Qt::NoModifier);
+            QCOMPARE(f.canvas()->selection().size(), 1);
+            if (route == QStringLiteral("key"))
+                QTest::keyClick(f.canvas(), Qt::Key_C, Qt::ControlModifier);
+            else
+                f.canvas()->copySelection();   // the body of the menu's action
+        }
+
         // Copying changes nothing on screen otherwise, so there is no way to
         // know it worked. It says so on the button that was pressed, not in
         // place of the age at the far end of the footer.
         QCOMPARE(footer->shownActionLabel(), QStringLiteral("Copied"));
         QVERIFY(!footer->isFlashing());
         QTRY_COMPARE_WITH_TIMEOUT(footer->shownActionLabel(), QStringLiteral("Copy text"), 3000);
+    }
+
+    // No single card can speak for a copy of several, and flashing all of them
+    // would be a light show, so the count goes to the toast.
+    void copyingSeveralItemsSaysSoInTheToast()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("first")));
+        f.service.appendTo(id, Item::makeText(QStringLiteral("second")));
+        f.model()->reload();
+        f.select(id);
+
+        f.canvas()->selectAll();
+        QCOMPARE(f.canvas()->selection().size(), 2);
+        f.canvas()->copySelection();
+
+        QVERIFY(f.toast()->isVisible());
+        QString said;
+        for (auto* l : f.toast()->findChildren<QLabel*>())
+            if (!l->text().isEmpty()) said = l->text();
+        QCOMPARE(said, QStringLiteral("2 items copied"));
+        // Nothing was destroyed, so the toast must not offer to put it back.
+        QVERIFY(!f.toast()->hasOffer());
+    }
+
+    // inform() was spelled offer(message, nullptr), so a message about something
+    // that destroyed NOTHING cancelled a live Undo. Delete two items, then copy
+    // within the eight seconds, and the delete became unundoable.
+    void anAcknowledgementDoesNotCancelALiveUndo()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("delete me")));
+        f.service.appendTo(id, Item::makeText(QStringLiteral("keep me")));
+        f.service.appendTo(id, Item::makeText(QStringLiteral("and me")));
+        f.model()->reload();
+        f.select(id);
+
+        const auto doomed = f.canvas()->itemOrder().first();
+        f.window.removeItems({doomed});
+        QVERIFY2(f.toast()->hasOffer(), "a delete must offer Undo");
+
+        // A copy happens while that offer is still standing. Two items must
+        // survive the delete: a single-item copy speaks on its own card and
+        // never reaches the toast, so it could not show this either way.
+        f.canvas()->selectAll();
+        QCOMPARE(f.canvas()->selection().size(), 2);
+        f.canvas()->copySelection();
+
+        QVERIFY2(f.toast()->hasOffer(),
+                 "copying destroyed nothing, so it must not destroy the Undo");
+        QVERIFY(f.toast()->undoNow());   // and Ctrl+Z still works
     }
 
     void savingAnEditAcknowledgesItselfAndResetsTheAge()

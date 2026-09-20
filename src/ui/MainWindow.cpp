@@ -236,6 +236,8 @@ void MainWindow::buildUi()
                                           Qt::QueuedConnection);
             });
     connect(canvas_, &ItemCanvas::imageActivated, this, &MainWindow::openImageItem);
+    connect(canvas_, &ItemCanvas::announced, this,
+            [this](const QString& message) { toast_->inform(message); });
     connect(canvas_, &ItemCanvas::removeRequested, this,
             [this](const QList<ItemId>& ids) { removeItems(ids, false); });
     connect(canvas_, &ItemCanvas::cutRequested, this,

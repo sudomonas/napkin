@@ -779,6 +779,33 @@ than announcing a deletion, though it goes the same way.
 you delete off the end — so a run of deletes does not require re-aiming the
 mouse between each one.
 
+### An action says that it happened
+
+Copying changes nothing on screen: without a word from the application, a
+successful copy and a broken one look identical. Napkin answers at two scopes,
+and the scope is chosen by who can speak for the action.
+
+| Scope | Surface | Used for |
+|---|---|---|
+| One card | its own footer — `CardFooter::acknowledgeAction()` turns "Copy text" into "Copied" for 1.6s | a copy of a single item |
+| The window | the toast, via `UndoToast::inform()` — no Undo button, because nothing was destroyed | a copy of several items at once |
+
+**The acknowledgement belongs to the verb, not to a route into it.** There are
+three ways to copy — the footer button, `Ctrl+C`, and the context menu — and
+`ItemCanvas::copySelection()` is what acknowledges, so all three do.
+
+> **Corrected.** This shipped wired to the footer button's *signal*, so only the
+> button said "Copied"; `Ctrl+C` and right-click ▸ Copy were silent, which is
+> the case a keyboard user hits every time. The test covered the button alone
+> and so never saw it. It is now a data-driven test over every route, and
+> reverting the fix fails the ones that were broken while the button still passes.
+
+An acknowledgement **never cancels a live Undo offer.** `inform()` used to be
+spelled `offer(message, nullptr)`, so a copy — which destroys nothing — threw
+away the Undo for a delete made two seconds earlier, and `Ctrl+Z` then did
+nothing. It now stands in front of the offer for 1.6s and puts it back with the
+rest of its countdown.
+
 ### One rule for paste
 
 A paste goes into the buffer you are looking at, and makes a new one only when
@@ -1762,6 +1789,8 @@ not fail.**
 | *Second test:* a restored item came back as a napkin of its own; Restore was silent and left the napkin on the trash board | medium | fixed — items go back into the napkin they came from if it is still live (schema v6, `restores_to`); Restore says where things went |
 | *Second test:* a cut left its original in the trash after the paste had completed the move | low | fixed — discarded once pasted, only when the clipboard still holds what was cut and that is all of it (a mixed selection copies as text only, so its images stay recoverable) |
 | *Second test:* a napkin that began with a picture or link was titled "Image" or by its raw URL; pasting in the trash did nothing | low | fixed — titled by its first note, then its first link (short form), then its first image; paste leaves the trash as Ctrl+N does |
+
+| Only the footer button said "Copied"; `Ctrl+C` and right-click ▸ Copy were silent, so the keyboard route to the most-used verb gave no sign it had worked | medium | fixed — `copySelection()` acknowledges, so every route does; several at once say so in the toast |
 
 **Known and not yet fixed**, carried forward honestly:
 
