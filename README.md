@@ -13,7 +13,7 @@ stays on this machine.
 The icon is a crumpled napkin, which is the whole idea: you write on one without
 deciding first whether it is worth writing on.
 
-> **Status: early development (0.1.5), Linux and Windows.** Expect rough edges.
+> **Status: early development (0.1.6), Linux and Windows.** Expect rough edges.
 > Windows is newer and less used than Linux; macOS is planned, not started.
 
 ![A napkin holding a screenshot and two pasted notes, with the napkin list on the left](resources/screenshots/board.png)

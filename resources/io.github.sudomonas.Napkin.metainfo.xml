@@ -73,6 +73,14 @@
   </requires>
 
   <releases>
+    <release version="0.1.6" date="2026-09-23" type="development">
+      <description>
+        <p>Napkin opens on a board rather than on a single column of notes.</p>
+        <ul>
+          <li>The window now opens wide enough for two columns of cards. It can still be made narrower; it just no longer starts that way.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.5" date="2026-09-20" type="development">
       <description>
         <p>Napkin now says when it has done something, and several keyboard actions that quietly did the wrong thing were corrected.</p>
