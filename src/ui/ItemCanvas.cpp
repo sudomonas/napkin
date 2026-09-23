@@ -100,6 +100,12 @@ int ItemCanvas::stableWidth() const
                                        - frameWidth() * 2);
 }
 
+int ItemCanvas::widthForColumns(int columns) const
+{
+    return boardWidthForColumns(columns) + verticalScrollBar()->sizeHint().width()
+           + frameWidth() * 2;
+}
+
 void ItemCanvas::wireCard(ItemCard* card)
 {
     connect(card, &ItemCard::selectRequested, this, &ItemCanvas::applySelection);

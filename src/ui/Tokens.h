@@ -77,6 +77,18 @@ inline constexpr int kCardFooterH  = 28;   // the copy action and the timestamp,
                                           // footerHeight() for the real one
 inline constexpr int kCardGap      = 20;
 
+// The board width at which BoardLayout::rebuild() settles on exactly `columns`
+// columns — the inverse of the arithmetic there, kept beside the constants it
+// divides by so the two cannot drift apart.
+//
+// The divisor is kCardTargetWidth, not kCardMinWidth. A board wide enough for
+// two 280px columns still draws one, so sizing a window off the minimum would
+// promise a second column and not deliver it.
+inline constexpr int boardWidthForColumns(int columns)
+{
+    return kPadX * 2 + columns * kCardTargetWidth + (columns - 1) * kCardGap;
+}
+
 // A card's edge is a meaningful affordance, so it obeys the same 3:1 floor as
 // everything else here. An earlier value of 62 was 1.63:1 in light — declared
 // "quiet", measured invisible, and contradicting the constant four lines above

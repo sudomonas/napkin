@@ -591,6 +591,31 @@ while 1280px gave 417px columns. Columns are now aimed at `kCardTargetWidth`
 (360) and then widened to fill, so 1920px gives four columns of ~364px. A board
 is for reading, and a wide screen should not be punished for being wide.
 
+### The window opens on two columns
+
+The opening size was `560 x 760`, which the splitter's own minimums silently
+raised to about 605. At that width the board draws **one** column, so the first
+thing a new user saw was a single stack of notes — which is the thing §1 says
+Napkin is not. A board only reads as a board once there are two of them.
+
+The opening width is therefore derived rather than chosen:
+`tokens::boardWidthForColumns(2)` inverts the arithmetic in
+`BoardLayout::rebuild()`, `ItemCanvas::widthForColumns()` adds the scrollbar and
+frame that `stableWidth()` takes away, and `MainWindow` adds the list and the
+splitter handle — 1162px on this machine. The divisor is `kCardTargetWidth`, not
+`kCardMinWidth`: a board wide enough for two 280px columns still draws one, so
+sizing off the minimum would have promised a second column and not delivered it.
+`test_canvas` asserts both halves — that the width yields two columns and that
+one pixel less yields one — so a helper returning a merely generous number fails.
+
+This is the **opening** size only. The minimum is unchanged at one column plus
+the list, so the window can still be dragged narrow or tiled to half a small
+screen; it just refuses to *start* there. It is also clamped to the screen's
+available width, because a 1162px opening size on a 1024px display is a window
+with its edge off-screen. Qt's offscreen platform reports an 800px screen, so
+headless runs take the clamped branch — which is why the test asks for the
+width again rather than reading it off the window.
+
 ### A stylesheet freezes a widget's palette
 
 `QPlainTextEdit` inside a text card used to get its transparency from

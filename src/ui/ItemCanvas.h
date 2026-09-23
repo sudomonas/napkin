@@ -45,6 +45,11 @@ public:
     int  matchCount() const { return int(matching_.size()); }
     int  totalCount() const { return int(allItems_.size()); }
     int  indexOf(ItemId id) const;
+
+    // The widget width this canvas needs before its board settles on `columns`
+    // columns — the inverse of stableWidth(), scrollbar and frame included, so
+    // a caller sizing a window gets the count it asked for.
+    int  widthForColumns(int columns) const;
     // Board order, newest first. Not the same as the widget tree order, which
     // is creation order.
     QList<ItemId> itemOrder() const;

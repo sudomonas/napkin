@@ -1469,6 +1469,55 @@ private slots:
                      qPrintable(QString("card is %1px wide").arg(card->width())));
     }
 
+    void theWindowOpensWideEnoughForTwoColumns()
+    {
+        // Napkin opening one column wide reads as a list of notes, which §1
+        // says it is not. The opening width is therefore a claim about the
+        // board, and this is the claim being checked — not the number.
+        std::vector<Item> items;
+        for (int i = 0; i < 6; ++i) {
+            Item item = Item::makeText(QStringLiteral("x"));
+            item.id = ItemId(i + 1);
+            items.push_back(item);
+        }
+        BoardLayout wide;
+        wide.setViewport(tokens::boardWidthForColumns(2));
+        wide.rebuild(items);
+        QCOMPARE(wide.columnCount(), 2);
+
+        // One pixel less is one column: the width is a threshold, so a helper
+        // that returned a merely generous number would pass the line above and
+        // still let the window open on a single column.
+        BoardLayout narrow;
+        narrow.setViewport(tokens::boardWidthForColumns(2) - 1);
+        narrow.rebuild(items);
+        QCOMPARE(narrow.columnCount(), 1);
+
+        // And it survives the real widgets — splitter, scrollbar and frame —
+        // rather than only the arithmetic. Qt's offscreen platform reports an
+        // 800px screen and MainWindow clamps its opening size to the screen,
+        // so the width it wanted has to be asked for again here.
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("left")));
+        f.service.appendTo(id, Item::makeText(QStringLiteral("right")));
+        f.model()->reload();
+        f.select(id);
+
+        auto* splitter = f.window.findChild<QSplitter*>();
+        QVERIFY(splitter);
+        f.window.resize(splitter->sizes().value(0) + f.canvas()->widthForColumns(2)
+                            + splitter->handleWidth(),
+                        760);
+        QTest::qWait(50);
+
+        const auto cards = f.canvas()->findChildren<TextItemCard*>();
+        QCOMPARE(cards.size(), 2);
+        QVERIFY2(cards.at(0)->x() != cards.at(1)->x(),
+                 qPrintable(QString("both cards are at x=%1; the board is one column wide")
+                                .arg(cards.at(0)->x())));
+    }
+
     void aWideBoardWidensItsColumnsRatherThanAddingMore()
     {
         // Columns used to be packed at kCardMinWidth, so the reading measure

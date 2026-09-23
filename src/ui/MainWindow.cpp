@@ -51,6 +51,8 @@
 #include <QTimer>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
+#include <QScreen>
+#include <algorithm>
 
 namespace napkin {
 
@@ -182,7 +184,14 @@ void MainWindow::buildUi()
     listSide->setMinimumWidth(260);
     listSide->setMaximumWidth(520);
     canvasSide->setMinimumWidth(tokens::kCardMinWidth + tokens::kPadX * 2);
-    splitter_->setSizes({340, 660});
+
+    // Opening sizes, reused below to size the window itself. The canvas asks
+    // for the width that draws two columns rather than a round number, so the
+    // first thing a new user sees is a board and not a single column of notes
+    // — which is what §1 says Napkin is not.
+    const int listStartWidth   = 340;
+    const int canvasStartWidth = canvas_->widthForColumns(2);
+    splitter_->setSizes({listStartWidth, canvasStartWidth});
 
     stack_ = new QStackedWidget;
     stack_->addWidget(splitter_);   // 0: the app
@@ -352,7 +361,18 @@ void MainWindow::buildUi()
         tr("Your napkins, newest first. Enter opens one; typing writes on it; Ctrl+P pins, Ctrl+D keeps, Delete trashes."));
 
     setWindowTitle(tr("Napkin"));
-    resize(560, 760);
+    // The opening size only. The minimum is still one column plus the list, so
+    // the window can be dragged narrow or tiled to half a small screen; this
+    // just refuses to *start* there. Clamped to the screen, because a 1162px
+    // opening width on a 1024px display is a window with its edge off-screen.
+    {
+        const int startWidth  = listStartWidth + canvasStartWidth + splitter_->handleWidth();
+        const int startHeight = 760;
+        const QRect avail = QGuiApplication::primaryScreen()
+                                ? QGuiApplication::primaryScreen()->availableGeometry()
+                                : QRect(0, 0, startWidth, startHeight);
+        resize(std::min(startWidth, avail.width()), std::min(startHeight, avail.height()));
+    }
     updateEmptyState();
 
     // A keyboard user arriving with focus on the Trash button and no row
