@@ -14,7 +14,7 @@
 
 pkgname=napkin-git
 _pkgname=napkin
-pkgver=0.1.0.r16.ga439610
+pkgver=0.1.5.r3.g5f99927
 pkgrel=1
 pkgdesc='A persistent scratch surface for text and images, kept only on this machine'
 arch=('x86_64')
