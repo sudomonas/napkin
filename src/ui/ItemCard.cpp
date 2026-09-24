@@ -1,6 +1,7 @@
 #include "ItemCard.h"
 #include "CardFooter.h"
 #include "LinkChip.h"
+#include "../domain/Calc.h"
 #include "../domain/Links.h"
 #include "MatchHighlighter.h"
 #include "Tokens.h"
@@ -18,13 +19,16 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLinearGradient>
+#include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPlainTextEdit>
 #include <QScrollBar>
+#include <QTextBlock>
 #include <QTextDocument>
+#include <QToolTip>
 #include <QVBoxLayout>
 #include <functional>
 
@@ -53,8 +57,27 @@ class PasteAwareTextEdit : public QPlainTextEdit {
 public:
     using QPlainTextEdit::QPlainTextEdit;
     std::function<bool(const QMimeData*)> onPaste;
+    // Adds the card's own entries to the editor's menu while editing.
+    std::function<void(QMenu*)> extendMenu;
 
 protected:
+    void contextMenuEvent(QContextMenuEvent* e) override
+    {
+        if (isReadOnly() || !extendMenu) { QPlainTextEdit::contextMenuEvent(e); return; }
+        // A right-click outside the selection moves the caret there first, as
+        // in most editors, so Calculate acts on the line that was clicked —
+        // not on wherever the caret was left (independent review).
+        const QTextCursor clicked = cursorForPosition(e->pos());
+        const QTextCursor current = textCursor();
+        if (!current.hasSelection() || clicked.position() < current.selectionStart()
+            || clicked.position() > current.selectionEnd())
+            setTextCursor(clicked);
+        // What QPlainTextEdit does itself, plus our entries.
+        QMenu* menu = createStandardContextMenu(e->pos());
+        menu->setAttribute(Qt::WA_DeleteOnClose);
+        extendMenu(menu);
+        menu->popup(e->globalPos());
+    }
     bool canInsertFromMimeData(const QMimeData* source) const override
     {
         return (source && source->hasImage()) || QPlainTextEdit::canInsertFromMimeData(source);
@@ -279,6 +302,13 @@ TextItemCard::TextItemCard(const Item& item, QWidget* parent) : ItemCard(item, p
         emit imagePasted(content.imageBytes, content.imageMime);
         return true;
     };
+    // The button for Ctrl+Tab, where a mouse user will look for it: next to
+    // the Cut, Copy and Paste that act on the same text.
+    edit->extendMenu = [this](QMenu* menu) {
+        menu->addSeparator();
+        menu->addAction(tr("Calculate\tCtrl+Tab"), this, [this] { calculate(); })
+            ->setObjectName(QStringLiteral("calculateAction"));
+    };
     edit_ = edit;
 
     // Belt and braces: with the horizontal bar off, a stray scroll offset is
@@ -499,6 +529,108 @@ void TextItemCard::insertText(const QString& text)
     edit_->insertPlainText(text);
 }
 
+// SPEC.md §7 "Calculating a line". Only ever on request: nothing is
+// evaluated, and nothing in the note changes, until Ctrl+Tab or Calculate.
+bool TextItemCard::calculate()
+{
+    if (!hasEditFocus()) return false;
+    QTextDocument* doc = edit_->document();
+    const QTextCursor caret = edit_->textCursor();
+
+    // Replaces part of one line. Returns false when the answer is already
+    // there, so recalculating an unchanged line adds nothing to undo.
+    const auto apply = [doc](const QTextBlock& block, const calc::LineEdit& change) {
+        QTextCursor c(doc);
+        c.setPosition(block.position() + change.start);
+        c.setPosition(block.position() + change.start + change.length, QTextCursor::KeepAnchor);
+        if (c.selectedText() == change.text) return false;
+        c.insertText(change.text);
+        return true;
+    };
+
+    calc::Error error = calc::Error::NotAnExpression;
+    bool answered = false;   // there was an answer to give, new or not
+    bool changed = false;    // and the text is now different
+    // One edit block, so one Ctrl+Z takes back the whole calculation — and so
+    // the answer is not merged into the typing before it, which would make
+    // that Ctrl+Z take the sum away too.
+    QTextCursor block(doc);
+    block.beginEditBlock();
+    QTextCursor after;   // where the caret goes when an answer was written
+
+    if (caret.hasSelection()) {
+        const QTextBlock first = doc->findBlock(caret.selectionStart());
+        QTextBlock last = doc->findBlock(caret.selectionEnd());
+        // Shift+Down from the start of a line selects up to the start of the
+        // next one, which is not a request to calculate that line too.
+        if (last != first && caret.selectionEnd() == last.position()) last = last.previous();
+        if (first == last && doc->findBlock(caret.selectionEnd()) == first) {
+            // Exactly what was selected, whatever surrounds it.
+            const calc::LineResult r = calc::calculateSelection(
+                first.text(), caret.selectionStart() - first.position(),
+                caret.selectionEnd() - first.position());
+            if (r.edit) {
+                changed = apply(first, *r.edit);
+                after = QTextCursor(doc);
+                after.setPosition(first.position() + r.edit->start + int(r.edit->text.size()));
+                answered = true;
+            } else {
+                error = r.error;
+            }
+        } else {
+            // Every line in the selection that asks for an answer.
+            for (QTextBlock b = first; b.isValid(); b = b.next()) {
+                const calc::LineResult r = calc::calculateLine(b.text(), calc::Scope::MarkedOnly);
+                if (r.edit) {
+                    changed = apply(b, *r.edit) || changed;
+                    answered = true;
+                } else if (r.error != calc::Error::NotAnExpression) {
+                    error = r.error;
+                }
+                if (b == last) break;
+            }
+        }
+    } else {
+        const QTextBlock line = caret.block();
+        const calc::LineResult r = calc::calculateLine(line.text(), calc::Scope::CaretLine);
+        if (r.edit) {
+            changed = apply(line, *r.edit);
+            after = QTextCursor(line);
+            after.movePosition(QTextCursor::EndOfBlock);
+            answered = true;
+        } else {
+            error = r.error;
+        }
+    }
+    // Typing straight after the answer would otherwise be merged into it:
+    // QTextDocument joins a lone insert onto an edit block that ended with an
+    // insert, so Ctrl+Z after a typo took the answer too (independent review).
+    // A no-op custom step, last in the block, is Qt's own way to end that.
+    struct UndoBarrier : QAbstractUndoItem {
+        void undo() override {}
+        void redo() override {}
+    };
+    if (changed) doc->appendUndoItem(new UndoBarrier);
+    block.endEditBlock();
+    if (!after.isNull()) edit_->setTextCursor(after);
+
+    if (!answered) {
+        // Said at the caret rather than beeped: a silent Ctrl+Tab reads as a
+        // key that does nothing, and a line of prose is the usual reason.
+        QString why;
+        switch (error) {
+        case calc::Error::DivideByZero: why = tr("Can’t divide by zero"); break;
+        case calc::Error::Undefined:    why = tr("That has no answer"); break;
+        default:
+            why = caret.hasSelection() ? tr("Nothing to calculate in the selection")
+                                       : tr("Nothing to calculate on this line");
+        }
+        const QRect at = edit_->cursorRect();
+        QToolTip::showText(edit_->viewport()->mapToGlobal(at.bottomLeft()), why, edit_);
+    }
+    return answered;
+}
+
 void TextItemCard::selectAllText()
 {
     edit_->selectAll();
@@ -559,6 +691,14 @@ bool TextItemCard::eventFilter(QObject* watched, QEvent* event)
     if (watched == edit_ && event->type() == QEvent::KeyPress) {
         auto* key = static_cast<QKeyEvent*>(event);
         const bool enter = key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter;
+
+        // Ctrl+Tab calculates. Plain Tab is taken: it walks between cards, and
+        // that is how the board is reached without a mouse.
+        if (key->key() == Qt::Key_Tab && (key->modifiers() & Qt::ControlModifier)
+            && hasEditFocus()) {
+            calculate();
+            return true;
+        }
 
         // Ctrl+Enter commits and leaves. Plain Enter belongs to the text — a
         // note is several lines more often than it is one.

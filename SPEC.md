@@ -86,6 +86,14 @@ tables, code blocks, syntax highlighting, WYSIWYG.
 If a user pastes Markdown, Napkin stores Markdown as text. That is the whole
 feature.
 
+**One exception: arithmetic on request** (§7 "Calculating a line"). `Ctrl+Tab`
+writes the answer to the calculation on the caret's line into the text, as
+ordinary characters. It passes §21 as *use it*: a sum on a napkin is there to
+be worked out. It is deterministic and local, so it is not the automatic
+intelligence ruled out above, and it stays small by construction. Nothing is
+evaluated until asked, nothing is rendered that is not in the text, and there
+is no new item type, format or mode.
+
 ## 2. Invariants
 
 These are testable MUSTs. Everything else in this document is guidance.
@@ -846,6 +854,127 @@ than announcing a deletion, though it goes the same way.
 **A delete leaves the next item selected**, clamping to the new last item when
 you delete off the end — so a run of deletes does not require re-aiming the
 mouse between each one.
+
+### Calculating a line
+
+A napkin is where `1200*12` gets worked out, so the editor can work it out.
+**Only when asked.** `Ctrl+Tab`, or *Calculate* in the editor's right-click menu
+(beside Cut, Copy and Paste, the other things done to the text under the
+caret). Plain `Tab` was not available: it walks between cards, and that is how
+the board is reached without a mouse.
+
+| What is under the caret | What happens |
+|---|---|
+| a line ending in `=` — `rent 1200*12 =` | the answer is written after it: `rent 1200*12 = 14400` |
+| a line already showing an answer — `13*3 = 36` | the answer is replaced: `13*3 = 39` |
+| any other line ending in a calculation with an operator — `12*3` | ` = 36` is appended |
+| a selection inside one line | exactly the selection is calculated; the answer goes in the `=` slot after it if there is one, otherwise ` = answer` follows it |
+| a selection across lines | every line in it that ends in `=` or shows an answer; nothing else |
+
+Right-click → *Calculate* acts on the line that was clicked. A right-click
+outside the selection moves the caret there first, as most editors do.
+
+**The calculation is the run at the end of the line that parses, and that
+starts where a calculation can start.** That means the start of the line, the
+start after a list marker (`- `, `* `, `+ `, `• `, `1. `, `2) `), or after
+whitespace following prose. It never starts straight after a character
+(`10:30`, `0x1F`), and never after whitespace that follows a digit, a bracket,
+an operator or a currency sign. Any of those means the calculation began
+earlier. If the whole of it did not parse, a tail of it is not the answer. It
+is refused.
+
+**A bare number is not a calculation**, selected or not. Without that rule
+`Chapter 3` would become `Chapter 3 = 3`. **Without an `=`, it takes a binary
+operator**, so `I like pi` and `check the log 100` are prose, while `pi =`
+asked. A multi-line selection skips lines that did not ask. Selecting a whole
+note and recalculating it must not append to `Call 555-1234`, which parses as
+a subtraction. On the caret line, `Ctrl+Tab` on that same text was an explicit
+request, and it gets `= -679`.
+
+**A limit that stays.** `pages 3-4 = 2` has exactly the shape of an answered
+sum, and recalculating a selection containing it gives `= -1`. Nothing in the
+text tells the two apart. One undo puts it back.
+
+**What it understands.** `+ - * / ^ **`, `x × ÷ −` as typed on phones, `mod`,
+parentheses, `sqrt abs round floor ceil ln log sin cos tan`, `pi π e`, and
+exponents (`1e3`). Angles are radians unless written in degrees: `sin 30°`.
+A function's argument is one bracket or number, so `log(1000)^2` is 9.
+Digits in any script (`५*२`) are read. A number with a leading zero (`007`,
+the `01` of `2024-01-15`) or a `0x` prefix is an identifier, not a quantity,
+and is refused. A percent works as it does on a pocket calculator:
+`200 + 10%` is 220, and `15% of 80` is 12. Grouped numbers keep their grouping,
+in either the western `1,234,567` or the Indian `12,34,567` style. A comma that
+fits neither is refused, so `1,2` is not silently read as twelve. One currency
+symbol (`$ € £ ¥ ₹`) is carried into the answer, and mixing two of them is
+refused for the whole line. Answers have twelve significant digits, so
+`0.1+0.2` gives `0.3` and `4.35*100` gives 435 rather than float noise. Whole
+numbers below 10^15 are written in full. A large amount keeps two decimals, up
+to the sixteen digits a double holds: `$1,234,567,890,123.50 + 1` gives
+`$1,234,567,890,124.5`. Only past 10^15, or below 10^-9, does an answer go
+scientific.
+
+**What it does not do.** No variables, units, dates or currency conversion.
+Those are what turn a calculator into a product, and currency conversion
+needs the network (invariant 4). Decimal commas (`1,5`) are not read as
+decimals, because the comma is already taken by grouping.
+
+**The answer is ordinary text.** Autosave, search, copy and export see exactly
+what is on screen. The calculation is one undo step, kept separate from the
+typing on both sides of it.
+
+- **Before:** without the edit block, `Ctrl+Z` merged the answer into the
+  preceding keystrokes and took the sum away with it.
+- **After:** `QTextDocument` joins a lone insert onto an edit block that ended
+  with an insert. So typing straight after the answer and pressing `Ctrl+Z`
+  took the answer too. A no-op `QAbstractUndoItem` appended last in the block
+  is Qt's way to end it.
+
+Both are caught by `test_calculate`, and both were verified by removing the fix.
+Recalculating a line that is already right changes nothing, not even the undo
+stack. The barrier goes in only when the text changed.
+
+**When there is nothing to do, it says so** at the caret, in a tooltip. The
+reasons are *Nothing to calculate on this line*, *Can't divide by zero* and
+*That has no answer*. A silent `Ctrl+Tab` reads as a broken key.
+
+**Bounded.** A line over 1000 characters is not parsed. Nesting deeper than 64
+is refused rather than recursed into, for the whole line, not just the part
+that went too deep. 400 levels of parentheses would otherwise be several
+hundred stack frames on a Windows main thread with 1 MB. The deep-nesting test
+originally tested nothing, because its input was longer than the length cap
+and never reached the parser. It now nests inside the cap, and goes red when
+the limit is removed. The slowest line in a 200,000-string fuzz takes 0.03 ms.
+
+> **Corrected by independent review, 2026-09-24.** The first version took *the
+> longest run at the end of the line that parses*, from anywhere. That made it
+> answer part of what was written instead of refusing all of it:
+>
+> - `1 000 000 * 2 =` gave 0, and `1 500 + 250 =` gave 750.
+> - `(2+3)*(4+5 =` gave 9.
+> - `10:30 + 45 =` gave 75.
+> - `Meeting 2024-01-15` gave 2008.
+> - `0x10` gave 0.
+> - A markdown bullet was a minus sign: `- 5 + 3 =` gave -2, including in a
+>   whole-note recalculation.
+> - It went around its own refusals. `£5 + $5 =` gave `$10`. 101 minus signs
+>   before `(1+2)` gave the innermost 64 levels' answer, 3.
+> - Separately, `log(1000)^2` gave 6, because a function took the power into
+>   its argument.
+> - Answers over 10^12 that were not whole numbers went scientific and lost
+>   their cents.
+> - A selection ending at the start of a line calculated that line too.
+> - Right-click → Calculate acted on the caret's line, not the clicked one.
+>
+> I had written 34 tests and none of them covered any of this; every one was a
+> case I had thought of. Each finding is now a test, and each fix was checked
+> by removing it and watching its test go red. Re-running the review's own
+> inputs then found one more: digits of other scripts (`५`) passed `isDigit()`
+> and failed `toDouble()`, and were reported as *That has no answer*.
+
+`src/domain/Calc.cpp` is Core-only and tested headless (`test_calc`). The key,
+the menu, undo and saving are tested through the real editor
+(`test_calculate`), with the window active, so that a `QAction` bound to the
+same chord would be found by the test.
 
 ### An action says that it happened
 

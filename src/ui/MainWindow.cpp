@@ -724,6 +724,8 @@ void MainWindow::showShortcuts()
            "<td>Copy, cut or delete the selection</td></tr>"
            "<tr><td><b>Double-click</b> empty space</td><td>New note</td></tr>"
            "<tr><td><b>Right-click</b></td><td>Edit, copy, cut or delete</td></tr>"
+           "<tr><td><b>Ctrl+Tab</b></td><td>Calculate the line — <i>12*3 =</i> "
+           "becomes <i>12*3 = 36</i></td></tr>"
            "<tr><td><b>Ctrl+Enter</b></td><td>Finish editing</td></tr>"
            "<tr><td><b>Esc</b></td><td>Finish editing, then clear the selection</td></tr>"
            "<tr><td colspan='2'>&nbsp;</td></tr>"

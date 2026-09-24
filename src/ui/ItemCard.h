@@ -116,6 +116,10 @@ public:
     bool hasEditFocus() const override;
     void updateAccessibleName();
     void setSearchTerms(const QStringList& terms);
+    // SPEC.md §7: answer the calculation on the caret's line, the selected
+    // expression, or every line of a multi-line selection that ends in "=".
+    // Ctrl+Tab. False, with a tooltip saying why, when there was nothing to do.
+    bool calculate();
 
     // SPEC.md §3: a text item whose whole content is one URL is *rendered* as a
     // chip. Derived presentation — the item is still text and still editable,

@@ -56,6 +56,10 @@ See [SPEC.md](SPEC.md) §1.
   a chip you can open and a link inside prose opens with `Ctrl`+click; and
   images: PNG, JPEG, WebP, SVG and animated GIF. Double-click an image to open
   it full size.
+- **Work sums out where you wrote them.** End a line with `=` and press
+  `Ctrl+Tab`: `rent 1200*12 =` becomes `rent 1200*12 = 14400`. Percentages,
+  `₹`/`$` amounts and `1,20,000`-style grouping work too. The answer is plain
+  text, and nothing is calculated unless you ask.
 - **Search everything** with `Ctrl+F`: text, links and image filenames. Matches
   are highlighted where they sit, and *All napkins* puts the rest back.
 - **Nothing is deleted on your behalf.** Napkins you have not touched in 30 days
