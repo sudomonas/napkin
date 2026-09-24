@@ -15,7 +15,7 @@
 # To move to a new release: bump pkgver, then `updpkgsums` (or makepkg -g).
 
 pkgname=napkin
-pkgver=0.1.6
+pkgver=0.1.7
 pkgrel=1
 pkgdesc='A persistent scratch surface for text and images, kept only on this machine'
 arch=('x86_64')
@@ -26,7 +26,7 @@ depends=('qt6-base' 'qt6-svg' 'qt6-imageformats' 'sqlite' 'hicolor-icon-theme')
 makedepends=('cmake' 'ninja')
 conflicts=('napkin-git')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('90bf4e7984dbd28ee61a7ae9e852f9e157aa25ccdb1b95092ed46f913589081c')
+sha256sums=('397c1c7fb041022b7ee1256af3c13991be3ad7f426af8be4b75ef43fbcccc86f')
 
 # How many compiles at once. MAKEFLAGS=-jN wins, as makepkg users expect.
 # Otherwise one per free gigabyte, capped at the core count: each compile of a
