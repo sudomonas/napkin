@@ -73,6 +73,17 @@
   </requires>
 
   <releases>
+    <release version="0.1.7" date="2026-09-24" type="development">
+      <description>
+        <p>Napkin can work out the sums you write on it.</p>
+        <ul>
+          <li>End a line with = and press Ctrl+Tab: "rent 1200*12 =" becomes "rent 1200*12 = 14400". Calculate is also in the right-click menu while editing.</li>
+          <li>Change a number and press Ctrl+Tab again to recalculate. Select several lines to fill in every line that ends in =.</li>
+          <li>Percentages work as on a calculator, and amounts in $, €, £, ¥ or ₹ keep their symbol and their 1,234,567 or 12,34,567 grouping.</li>
+          <li>The answer is ordinary text, and nothing is calculated unless you ask. A line that is not a sum is left alone.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.6" date="2026-09-23" type="development">
       <description>
         <p>Napkin opens on a board rather than on a single column of notes.</p>
