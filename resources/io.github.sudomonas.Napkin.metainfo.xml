@@ -73,6 +73,18 @@
   </requires>
 
   <releases>
+    <release version="0.2.2" date="2026-10-07" type="development">
+      <description>
+        <p>The trash is easier to work with.</p>
+        <ul>
+          <li>Restore a single card from the trash: it goes back into the napkin it came from.</li>
+          <li>The trash says where deleted cards came from, when a napkin was deleted and how many days are left.</li>
+          <li>Search on the Trash tab searches the trash, and a search with no results says when the trash has a match.</li>
+          <li>Ctrl+Z reliably takes back the last delete, even from the search box.</li>
+          <li>Restoring puts a napkin back where it was in the list, and never splits a napkin in two.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.1" date="2026-10-06" type="development">
       <description>
         <p>Deleting items inside the trash works.</p>

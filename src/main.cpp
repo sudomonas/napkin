@@ -25,7 +25,7 @@ int main(int argc, char** argv)
     Application app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("napkin"));
     QCoreApplication::setOrganizationName(QStringLiteral("napkin"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("0.2.1"));
+    QCoreApplication::setApplicationVersion(QStringLiteral("0.2.2"));
     // Must match the .desktop file's basename, or Wayland gives the window no
     // icon and no taskbar identity. Until now this named a file that did not
     // exist anywhere.
