@@ -3,6 +3,9 @@
 #include <QStackedWidget>
 #include "../src/ui/EmptyStateView.h"
 #include "GuiFixture.h"
+#include <QLabel>
+#include <QAction>
+#include <QLineEdit>
 #include <QTimer>
 #include <QMessageBox>
 #include "../src/domain/Clock.h"
@@ -132,8 +135,9 @@ private slots:
         f.window.showTrash(true);
         QCOMPARE(f.model()->mode(), BufferListModel::Mode::Trash);
         QCOMPARE(f.model()->rowCount(), 1);
+        // The heading carries the rule, so it is said while there is something to keep.
         QCOMPARE(f.model()->index(0, 0).data(BufferListModel::SectionNameRole).toString(),
-                 QStringLiteral("TRASH"));
+                 QStringLiteral("TRASH · KEPT %1 DAYS").arg(napkin::BufferService::trashRetentionDays()));
 
         // Delete in the trash now means delete, as it does in every file
         // manager; Restore is its own action, bound to R.
@@ -384,6 +388,284 @@ private slots:
         QVERIFY_THROWS_EXCEPTION(napkin::DbError,
                                  f.service.deleteTrashedItems(id, {kept.front().id}));
         QCOMPARE(f.items.countForBuffer(id), 1);
+    }
+
+    // --- the trash, after the 2026-10-06 usability test --------------------
+
+    // Deleting a napkin's last card left focus in the search box, and Ctrl+Z
+    // there undid the search text: the napkin stayed in the trash while the
+    // toast vanished as if it had worked.
+    void ctrlZInTheSearchBoxTakesBackTheDeleteWhileItIsOffered()
+    {
+        GuiFixture f;
+        const auto only = f.seed("Groceries\n- oats");
+        f.seed("something else");
+        f.select(only);
+        auto* search = f.window.findChild<QLineEdit*>(QStringLiteral("searchField"));
+        search->setText(QStringLiteral("dal"));               // text the box could undo
+        search->clear();
+        QTRY_VERIFY(!f.model()->isSearching());
+        f.select(only);
+        f.canvas()->selectAll();
+        f.canvas()->deleteSelection();                        // the last card: the napkin goes
+        QVERIFY(f.buffers.find(only)->inTrash());
+        QVERIFY(f.toast()->hasOffer());
+
+        QTest::keyClick(search, Qt::Key_Z, Qt::ControlModifier);
+        QVERIFY2(!f.buffers.find(only)->inTrash(), "Ctrl+Z in the search box did not undo the delete");
+        QVERIFY2(search->text().isEmpty(), "Ctrl+Z also undid the search box's text");
+    }
+
+    // Case B of the usability test: right after restoring something, delete a
+    // card and press Ctrl+Z — the card must come back.
+    void undoAfterARestoreStillTakesBackTheNextDelete()
+    {
+        GuiFixture f;
+        const auto restored = f.seed("restore me");
+        const auto work = f.buffers.create();
+        for (const char* t : {"keep", "delete then undo"})
+            f.service.appendTo(work, Item::makeText(QString::fromLatin1(t)));
+        f.service.trash(restored);
+        f.model()->reload();
+
+        f.window.findChild<QPushButton*>(QStringLiteral("trashToggle"))->click();
+        QTRY_VERIFY(f.canvas()->showingANapkin());
+        f.window.restoreRow(f.model()->rowForId(restored));
+        QVERIFY(!f.buffers.find(restored)->inTrash());
+
+        f.window.findChild<QPushButton*>(QStringLiteral("homeSegment"))->click();
+        f.select(work);
+        QCOMPARE(f.items.countForBuffer(work), 2);
+        QTest::mouseClick(f.canvas()->findChildren<TextItemCard*>().first(), Qt::LeftButton);
+        f.canvas()->deleteSelection();
+        QCOMPARE(f.items.countForBuffer(work), 1);
+        f.window.findChild<QAction*>(QStringLiteral("undoAction"))->trigger();
+        QCOMPARE(f.items.countForBuffer(work), 2);
+        QVERIFY2(!f.buffers.find(restored)->inTrash(), "Ctrl+Z took back the restore instead");
+    }
+
+    // The Trash tab searched the live napkins, so an old note in the trash was
+    // "not found" from anywhere. Now the trash searches the trash, and a live
+    // search that finds nothing says the trash has it and goes there.
+    void searchFindsWhatIsInTheTrashFromBothSides()
+    {
+        GuiFixture f;
+        const auto old = f.seed("Old todo: renew passport");
+        f.seed("Recipe: dal tadka");
+        f.service.trash(old);
+        f.model()->reload();
+        auto* search = f.window.findChild<QLineEdit*>(QStringLiteral("searchField"));
+
+        search->setText(QStringLiteral("passport"));
+        QTRY_VERIFY(f.model()->isSearching());
+        QCOMPARE(f.model()->rowCount(), 0);
+        auto* empty = f.window.findChild<EmptyStateView*>();
+        auto* action = empty->findChild<QPushButton*>(QStringLiteral("emptyStateAction"));
+        QTRY_VERIFY(action->isVisibleTo(&f.window));
+        QCOMPARE(action->text(), QStringLiteral("Look in the trash"));
+        action->click();
+        QCOMPARE(f.model()->mode(), BufferListModel::Mode::Trash);
+        QTRY_COMPARE(f.model()->rowCount(), 1);
+        QCOMPARE(f.model()->idAt(0), old);
+
+        // And in the trash, only the trash: the live recipe is not a result.
+        search->setText(QStringLiteral("dal"));
+        QTRY_COMPARE(f.model()->query(), QStringLiteral("dal"));
+        QCOMPARE(f.model()->rowCount(), 0);
+        // Empty trash… stays offered: the trash has something, whatever the search shows.
+        QVERIFY(f.window.findChild<QPushButton*>(QStringLiteral("emptyTrashButton"))->isVisibleTo(&f.window));
+    }
+
+    // Two cards deleted from "Q4 planning" showed up in the trash titled by one
+    // of themselves, with nothing saying whose they were. A trash row now
+    // carries where its items came from and when it was deleted.
+    void aTrashRowSaysWhereItCameFromAndWhenItWasDeleted()
+    {
+        GuiFixture f;
+        const auto q4 = f.buffers.create();
+        for (const char* t : {"Q4 planning notes", "whiteboard", "Action items"})
+            f.service.appendTo(q4, Item::makeText(QString::fromLatin1(t)));
+        const auto whole = f.seed("Old todo: renew passport");
+        std::vector<ItemId> two;
+        for (const auto& it : f.items.listForBuffer(q4))
+            if (it.text != QStringLiteral("Q4 planning notes")) two.push_back(it.id);
+        const auto holder = f.service.trashItems(q4, two).holder;
+        f.service.trash(whole);
+        f.model()->reload();
+        f.window.findChild<QPushButton*>(QStringLiteral("trashToggle"))->click();
+
+        const QModelIndex cards = f.model()->index(f.model()->rowForId(holder), 0);
+        const QModelIndex napkin = f.model()->index(f.model()->rowForId(whole), 0);
+        QCOMPARE(cards.data(BufferListModel::OriginRole).toString(), QStringLiteral("Q4 planning notes"));
+        QVERIFY2(napkin.data(BufferListModel::OriginRole).toString().isEmpty(),
+                 "a whole napkin came from nowhere else");
+        for (const QModelIndex& i : {cards, napkin}) {
+            const qint64 at = i.data(BufferListModel::DeletedAtRole).toLongLong();
+            QVERIFY2(at > 0 && nowMs() - at < 60000, "no deletion time on a trash row");
+        }
+    }
+
+    // --- restoring single cards -----------------------------------------------
+    static BufferId napkinOf(GuiFixture& f, std::initializer_list<const char*> texts)
+    {
+        const auto id = f.buffers.create();
+        for (const char* t : texts) f.service.appendTo(id, Item::makeText(QString::fromLatin1(t)));
+        return id;
+    }
+    static ItemId itemCalled(GuiFixture& f, BufferId in, const char* text)
+    {
+        for (const auto& it : f.items.listForBuffer(in))
+            if (it.text == QString::fromLatin1(text)) return it.id;
+        return kNoItem;
+    }
+
+    void oneCardOfADeletedSetGoesBackIntoItsNapkin()
+    {
+        GuiFixture f;
+        const auto q4 = napkinOf(f, {"notes", "photo", "action items"});
+        const auto holder = f.service.trashItems(q4, {itemCalled(f, q4, "photo"),
+                                                      itemCalled(f, q4, "action items")}).holder;
+        const auto target = f.service.restoreItems(holder, {itemCalled(f, holder, "photo")});
+        QCOMPARE(target, q4);
+        QVERIFY(itemCalled(f, q4, "photo") != kNoItem);
+        QCOMPARE(f.items.countForBuffer(q4), 2);
+        QCOMPARE(f.items.countForBuffer(holder), 1);           // the other stays in the trash
+        QVERIFY(f.buffers.find(holder)->inTrash());
+        QCOMPARE(*f.buffers.find(holder)->restoresTo, q4);      // and still knows where it goes
+    }
+
+    // "Read later" was split in two for good: its card restored alone became a
+    // napkin of its own because the napkin was in the trash too.
+    void restoringCardsWhoseNapkinIsInTheTrashBringsTheNapkinBack()
+    {
+        GuiFixture f;
+        const auto later = napkinOf(f, {"read later", "doc.qt.io link"});
+        const auto holder = f.service.trashItems(later, {itemCalled(f, later, "doc.qt.io link")}).holder;
+        f.service.trash(later);
+        const auto target = f.service.restore(holder);
+        QCOMPARE(target, later);
+        QVERIFY(!f.buffers.find(later)->inTrash());
+        QCOMPARE(f.items.countForBuffer(later), 2);
+        QVERIFY2(!f.buffers.find(holder), "the card came back as a napkin of its own");
+    }
+
+    void partOfAWholeNapkinInTheTrashComesBackAndTheRestRejoinsItLater()
+    {
+        GuiFixture f;
+        const auto recipe = napkinOf(f, {"dal tadka", "ingredients", "photo"});
+        f.buffers.setPinned(recipe, true);
+        f.service.trash(recipe);
+        QCOMPARE(f.service.restoreItems(recipe, {itemCalled(f, recipe, "ingredients")}), recipe);
+        QVERIFY(!f.buffers.find(recipe)->inTrash());
+        QVERIFY2(f.buffers.find(recipe)->pinned, "the napkin came back as a different one");
+        QCOMPARE(f.items.countForBuffer(recipe), 1);
+
+        // The rest is in the trash as cards deleted from it.
+        BufferId rest = kNoBuffer;
+        for (const auto& b : f.buffers.listTrash()) if (b.restoresTo == recipe) rest = b.id;
+        QVERIFY(rest != kNoBuffer);
+        QCOMPARE(f.items.countForBuffer(rest), 2);
+        QCOMPARE(f.service.restore(rest), recipe);
+        QCOMPARE(f.items.countForBuffer(recipe), 3);
+        QStringList order;
+        for (const auto& it : f.items.listForBuffer(recipe)) order << it.text;
+        QCOMPARE(order.size(), 3);                               // all back, one napkin
+    }
+
+    // Through the window: the card menu in the trash restores just that card,
+    // says where it went, and Undo puts it back in the trash.
+    void restoringACardFromTheBoardSaysWhereAndCanBeUndone()
+    {
+        GuiFixture f;
+        const auto q4 = napkinOf(f, {"notes", "photo", "action items"});
+        const auto holder = f.service.trashItems(q4, {itemCalled(f, q4, "photo"),
+                                                      itemCalled(f, q4, "action items")}).holder;
+        f.model()->reload();
+        f.window.findChild<QPushButton*>(QStringLiteral("trashToggle"))->click();
+        f.select(holder);
+        QVERIFY(f.canvas()->inTrash());
+        emit f.canvas()->restoreRequested({itemCalled(f, holder, "photo")});
+        QCOMPARE(f.items.countForBuffer(q4), 2);
+        QCOMPARE(f.items.countForBuffer(holder), 1);
+        QVERIFY(f.toast()->hasOffer());
+        f.toast()->undoNow();
+        QCOMPARE(f.items.countForBuffer(q4), 1);                 // back in the trash
+        QCOMPARE(itemCalled(f, q4, "photo"), kNoItem);
+    }
+
+    // --- the retest, 2026-10-06 ------------------------------------------------
+    static QString toastWords(GuiFixture& f)
+    {
+        QString said;
+        for (auto* l : f.toast()->findChildren<QLabel*>()) if (!l->text().isEmpty()) said = l->text();
+        return said;
+    }
+
+    // Restore and undo put things back as they were, place in the list
+    // included: a three-day-old napkin restored came back "just now", at the top.
+    void restoreAndUndoLeaveANapkinWhereItWas()
+    {
+        GuiFixture f;
+        const auto recipe = napkinOf(f, {"dal tadka", "ingredients"});
+        const qint64 threeDays = nowMs() - 3 * kMsPerDay;
+        f.buffers.setModifiedAt(recipe, threeDays);
+        f.service.trash(recipe);
+        f.service.restore(recipe);
+        QCOMPARE(f.buffers.find(recipe)->modifiedAt, threeDays);
+
+        // A card deleted and undone: the napkin's age is what it was.
+        f.model()->reload();
+        f.select(recipe);
+        QTest::mouseClick(f.canvas()->findChildren<TextItemCard*>().first(), Qt::LeftButton);
+        f.canvas()->deleteSelection();
+        QVERIFY(f.buffers.find(recipe)->modifiedAt > threeDays);   // the delete is a change…
+        f.toast()->undoNow();
+        QCOMPARE(f.buffers.find(recipe)->modifiedAt, threeDays);   // …and undoing it is not
+        QCOMPARE(f.items.countForBuffer(recipe), 2);
+    }
+
+    // Ctrl+Z after the toast has gone did nothing at all; it now says where things are.
+    void undoWithNothingToUndoSaysWhereThingsWent()
+    {
+        GuiFixture f;
+        f.seed("something");
+        QVERIFY(!f.toast()->hasOffer());
+        f.window.findChild<QAction*>(QStringLiteral("undoAction"))->trigger();
+        QVERIFY(f.toast()->isVisible());
+        QVERIFY2(toastWords(f).contains(QStringLiteral("trash")), qPrintable(toastWords(f)));
+    }
+
+    // Cards deleted together are titled by where they came from, not by the first of them.
+    void deletedCardsAreTitledByTheirNapkin()
+    {
+        GuiFixture f;
+        const auto q4 = napkinOf(f, {"Q4 planning notes", "photo", "Action items"});
+        const auto holder = f.service.trashItems(q4, {itemCalled(f, q4, "photo"),
+                                                      itemCalled(f, q4, "Action items")}).holder;
+        f.model()->reload();
+        f.window.findChild<QPushButton*>(QStringLiteral("trashToggle"))->click();
+        const QModelIndex row = f.model()->index(f.model()->rowForId(holder), 0);
+        QCOMPARE(row.data(BufferListModel::PrimaryRole).toString(),
+                 QStringLiteral("2 cards from “Q4 planning notes”"));
+        QVERIFY(!row.data(BufferListModel::HeadRole).toString().isEmpty());   // what they are, still shown
+    }
+
+    // A card restored whose napkin was in the trash too brings the napkin back;
+    // the toast says so, and Undo sends the napkin back to the trash.
+    void reviveIsSaidAndUndone()
+    {
+        GuiFixture f;
+        const auto later = napkinOf(f, {"Read later", "doc.qt.io link"});
+        const auto holder = f.service.trashItems(later, {itemCalled(f, later, "doc.qt.io link")}).holder;
+        f.service.trash(later);
+        f.model()->reload();
+        f.window.findChild<QPushButton*>(QStringLiteral("trashToggle"))->click();
+        f.window.restoreRow(f.model()->rowForId(holder));
+        QVERIFY(!f.buffers.find(later)->inTrash());
+        QVERIFY2(toastWords(f).contains(QStringLiteral("back from the trash")), qPrintable(toastWords(f)));
+        f.toast()->undoNow();
+        QVERIFY(f.buffers.find(later)->inTrash());
+        QCOMPARE(f.items.countForBuffer(later), 2);   // with its card, in one piece
     }
 
     void theMouseBackButtonLeavesTheTrash()

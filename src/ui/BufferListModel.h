@@ -38,6 +38,9 @@ public:
         SnippetRole,        // why this buffer matched, when searching
         LatestRole,         // the most recent addition, when it is not the title
         IsOlderRole,        // past the age cutoff, so drawn quieter
+        OriginRole,         // in the trash: the napkin these items came from, by title
+        DeletedAtRole,      // in the trash: when it went there (0 when it is not)
+        HeadRole,           // the title its content gives, even where PrimaryRole says something else
     };
 
     // Live shows the stack; Trash shows what is recoverable. Same rows, same
@@ -123,6 +126,9 @@ private:
     Mode mode_ = Mode::Live;
     QString query_;
     QHash<BufferId, QString> snippets_;
+    // Trash rows holding items deleted from another napkin: that napkin's title,
+    // read once per reload (it is not in the list, so not in previewCache_).
+    QHash<BufferId, QString> origins_;
 
     bool frozen_        = false;
     bool pendingReload_ = false;

@@ -26,7 +26,11 @@ QString toMatchExpression(const QString& typed);
 // Buffers whose items match, best first. Rolled up to buffer level because that
 // is the unit the list shows — a hit on item 3's filename surfaces the whole
 // buffer (SPEC.md §5).
-std::vector<SearchHit> searchBuffers(Database& db, const QString& typed, int limit);
+// `inTrash` searches the trash instead of the live napkins: one or the other,
+// as the list shows one or the other (the Trash tab searched the live napkins
+// and found nothing that was in it — usability test, 2026-10-06).
+std::vector<SearchHit> searchBuffers(Database& db, const QString& typed, int limit,
+                                     bool inTrash = false);
 
 // Items within one buffer that match, so the board can mark them.
 std::vector<ItemId> matchingItems(Database& db, BufferId buffer, const QString& typed);

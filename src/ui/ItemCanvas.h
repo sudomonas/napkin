@@ -125,6 +125,11 @@ public:
     bool startsNoteOnTyping() const;
     // A napkin (possibly empty) is on the board, as opposed to "Select a napkin".
     bool showingANapkin() const { return bufferShown_; }
+    // Showing something in the trash: its cards offer Restore and a Delete that
+    // is permanent, and no Cut — nothing can be moved out of the trash but by
+    // restoring it (usability test, 2026-10-06: Cut was offered and refused).
+    void setInTrash(bool inTrash) { inTrash_ = inTrash; }
+    bool inTrash() const { return inTrash_; }
     // Repaints the "5 minutes ago" on every card on the board. Only the list
     // used to tick, so a card said "just now" for as long as it was on screen.
     void refreshTimestamps();
@@ -152,6 +157,7 @@ signals:
     void imageActivated(ItemId id);
     void removeRequested(const QList<ItemId>& ids);
     void cutRequested(const QList<ItemId>& ids);   // copied first, then removed
+    void restoreRequested(const QList<ItemId>& ids);   // in the trash: these cards, back
     void selectionChanged();
     void filterChanged();
     // Something happened that no card can speak for on its own — a copy of
@@ -230,6 +236,7 @@ private:
     bool              showAll_ = false;
     QHash<ItemId, ItemCard*> live_;           // the cards that currently exist
     QLabel*      placeholder_ = nullptr;
+    bool         inTrash_ = false;
 
     std::vector<ItemCard*>     cards_;
     std::vector<TextItemCard*> textCards_;

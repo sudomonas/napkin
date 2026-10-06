@@ -109,6 +109,11 @@ public:
     // BufferService::trashItems), with Undo offered on the toast.
     void removeItems(const QList<ItemId>& ids, bool cut = false);
     void removeTrashedItems(const QList<ItemId>& ids, bool cut);   // Delete in the trash: for good
+    void restoreTrashedCards(const QList<ItemId>& ids);            // some cards out of the trash
+    // The Undo for anything restored into a live napkin: those cards go back
+    // to the trash. One toast wording and one Undo, wherever the restore began.
+    void offerUndoOfRestore(BufferId target, const std::vector<ItemId>& restored, bool revived);
+    bool homeIsInTrash(BufferId trashed);
     // A text card the user emptied: there is nothing left to recover, so the
     // item goes for good rather than into the trash as a blank napkin.
     void discardItems(const QList<ItemId>& ids);
@@ -226,6 +231,8 @@ private:
     QMenu*           appMenu_ = nullptr;       // every action, behind the menu button
     QAction*         fullScreenAction_ = nullptr;
     bool             wasMaximized_ = false;    // what leaving full screen returns to
+    enum class EmptyAction { GoHome, SearchTrash };
+    EmptyAction      emptyAction_ = EmptyAction::GoHome;   // the empty state's button
     QToolButton*     settingsButton_ = nullptr;
     QAction*         showTrashAction_ = nullptr;
     QAction*         leaveTrashAction_ = nullptr;

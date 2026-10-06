@@ -1404,6 +1404,73 @@ Known and not fixed, deliberately or for now:
   order (3 items still there, checked). Editing a card's text in the trash
   was probed and does save, so it was left as it is.
 
+**The trash, after a usability test (2026-10-06).** A tester driving the real
+app in a sandbox (screenshots only, no source) found that deleting and
+restoring a whole napkin was easy (7 actions, no wrong turns) and that cards
+were where it broke. Three steps followed, each tested:
+
+1. *Undo and search can be trusted.*
+   - Ctrl+Z while an Undo is offered takes back the delete even from the search
+     box. Deleting a napkin's last card used to leave focus in the box, where
+     Ctrl+Z undid the search text and the toast vanished as if it had worked.
+     A note being written keeps its own undo. After a delete or restore, focus
+     goes to the list or the board, never falls through to the search box.
+     `ctrlZInTheSearchBoxTakesBackTheDeleteWhileItIsOffered` fails without it
+     (checked). The tester's other failed Ctrl+Z, right after a restore, was
+     not reproduced as an action and is put down to the same focus fall-through.
+   - Search on the Trash tab searches the trash (`searchBuffers(…, inTrash)`);
+     it searched the live napkins, so an old note in the trash was found from
+     nowhere. A live search with no matches says when the trash has some and
+     offers "Look in the trash".
+   - "Empty trash…" shows whenever the trash holds anything; a search in the
+     trash that matched nothing hid it until a restore.
+2. *The trash says what it holds.* A row of cards deleted from a napkin says
+   "From “Q4 planning — notes”"; a whole napkin says when it was deleted; both
+   count down "N days left". The heading carries the rule ("TRASH · KEPT 30
+   DAYS") — it was said only once the trash was empty. `Buffer::restoresTo` is
+   loaded with the row. The permanent-delete dialog names the napkin; Empty
+   trash says "N napkins and M sets of deleted cards", not "1 napkin" for one
+   stray card.
+3. *Single cards come back.* A card's menu in the trash offers "Restore this
+   card" and "Delete permanently…", and no Cut (it was offered and refused).
+   `BufferService::restoreItems`: cards from a set go back into their napkin;
+   if that napkin is itself in the trash it comes back with them — restoring
+   a card alone used to make it a napkin of its own, splitting "Read later"
+   for good (`restoringCardsWhoseNapkinIsInTheTrashBringsTheNapkinBack` fails
+   on the old rule, checked). Part of a whole napkin comes back as that same
+   napkin (pin, keep, name), and the rest stays in the trash as cards deleted
+   from it, so restoring them later rejoins it. Every restore into another
+   napkin now says where and offers Undo — before, some restore toasts had
+   Undo and some did not.
+
+*Retest, same day, same tasks, fresh tester.* Every task succeeded; restoring
+one card took 3 actions (was 7 with a workaround), finding the old passport
+note 6 with no wrong turns (was 11 with three failed searches). What it still
+found, and what changed:
+- Ctrl+Z after the toast had gone did nothing, and read as "undo is broken".
+  It now says "Nothing to undo. Deleted things stay in the trash for N days."
+- Restoring stamped a napkin "just now" and moved it to the top; undoing a
+  card delete left the napkin marked as just changed. `BufferRepository::
+  restore` no longer touches `modified_at`, putting cards back does not touch
+  their napkin, and undoing a card delete puts the napkin's time back —
+  `restoreAndUndoLeaveANapkinWhereItWas`. (Deleting a card is still a change.)
+- Deleting a napkin's last card says so: "That was its last card — … moved to
+  trash".
+- Restoring cards that brings their napkin back says so ("… is back from the
+  trash, with 1 card"), and its Undo sends the napkin back with them.
+- A set of deleted cards is titled "2 cards from “Q4 planning — notes”", its
+  first card on the second line; it read as a napkin called "Action items".
+  Empty trash says "N napkins and M cards deleted from other napkins".
+- After Undo the restored napkin is selected and the list has the keys;
+  permanent deletes confirm with a toast; both "Delete permanently…" read alike.
+- "Deleted just now" on the passport note the tester had "deleted earlier" was
+  the harness's seed data, which trashed it at the start of the run.
+
+Left as they are, deliberately: deleting a napkin's last card deletes the
+napkin (Ctrl+Z now reliably brings it back, and asking every time would slow
+the common case); after a delete the next card is selected, so Delete can be
+pressed again (`deletingAnItemLeavesTheNextOneSelected`).
+
 
 ### The three empty screens
 

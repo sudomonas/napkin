@@ -78,6 +78,13 @@ public:
     // holds items deleted from another one — that original napkin, if it is
     // still live, with the items put back into it.
     BufferId restore(BufferId id);
+    // Some of the cards of something in the trash, back where they belong:
+    // into the napkin they were deleted from (brought back too if it is itself
+    // in the trash), or — for a whole napkin in the trash — that napkin comes
+    // back with just these, and the rest stay in the trash as cards deleted
+    // from it, so restoring them later joins the same napkin rather than a new
+    // one. All of them is the same as restore(). Returns where they went.
+    BufferId restoreItems(BufferId from, const std::vector<ItemId>& ids);
 
     // The only automatic hard delete in Napkin. Touches nothing the user has
     // not already deleted.

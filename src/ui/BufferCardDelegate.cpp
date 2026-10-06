@@ -3,6 +3,9 @@
 #include "BufferListModel.h"
 #include "Icons.h"
 #include "Tokens.h"
+#include <QLocale>
+#include <QDateTime>
+#include "../domain/BufferService.h"
 #include "../media/Thumbnailer.h"
 #include "../domain/Preview.h"
 
@@ -25,6 +28,20 @@ namespace {
 // identical in value to the ones in Tokens.h. A second copy of a design system
 // is a second thing to forget to change: the file that calls itself the single
 // visual system was not the file this delegate was painting from.
+
+// "Deleted …" for a trash row: relativeTime() answers "Yesterday", "8:05 PM" or
+// "27 Sep", none of which reads after "Deleted", so the phrase is built here.
+QString deletedPhrase(Timestamp deleted)
+{
+    const Timestamp now = nowMs();
+    if (now - deleted < 60 * 60 * 1000LL) return QObject::tr("Deleted just now");
+    const QDate then = QDateTime::fromMSecsSinceEpoch(deleted).date();
+    const qint64 days = then.daysTo(QDateTime::fromMSecsSinceEpoch(now).date());
+    if (days <= 0) return QObject::tr("Deleted today");
+    if (days == 1) return QObject::tr("Deleted yesterday");
+    if (days < 7)  return QObject::tr("Deleted %1 days ago").arg(days);
+    return QObject::tr("Deleted on %1").arg(QLocale::system().toString(then, QStringLiteral("d MMM")));
+}
 
 QColor dimmed(const QPalette& pal, int alpha = kTextSecondary)
 {
@@ -330,6 +347,37 @@ void BufferCardDelegate::paint(QPainter* p, const QStyleOptionViewItem& option,
     if (!snippet.isEmpty()) {
         p->setFont(timestampFont(option.font));
         drawSnippet(p, QRect(content.left(), y, content.width(), tfm.height()), snippet, pal);
+    } else if (const auto deleted = index.data(BufferListModel::DeletedAtRole).value<Timestamp>();
+               deleted > 0 && !isDraft) {
+        // In the trash a row answers the two questions a usability tester could
+        // not: whose is this, and how long will it stay. Cards deleted from a
+        // napkin say which one; a whole napkin says when it was deleted. The
+        // right-hand side counts down to the day the trash empties it.
+        const int count = index.data(BufferListModel::ItemCountRole).toInt();
+        const qint64 kept = qint64(BufferService::trashRetentionDays()) * kMsPerDay;
+        const int left = int(std::max<qint64>(0, (deleted + kept - nowMs() + kMsPerDay - 1) / kMsPerDay));
+        const QString origin = index.data(BufferListModel::OriginRole).toString();
+        QStringList meta;
+        if (count > 1 && origin.isEmpty()) meta << QObject::tr("%1 items").arg(count);   // a set's title counts them
+        meta << (left == 0 ? QObject::tr("leaves today")
+                 : left == 1 ? QObject::tr("1 day left")
+                             : QObject::tr("%1 days left").arg(left));
+        const QString metaText = meta.join(QStringLiteral("  ·  "));
+        // The title already says whose they are; this line says what they are.
+        const QString where = origin.isEmpty()
+            ? deletedPhrase(deleted)
+            : index.data(BufferListModel::HeadRole).toString().simplified();
+
+        p->setFont(timestampFont(option.font));
+        const int metaW = std::max(0, std::min(tfm.horizontalAdvance(metaText) + 2,
+                                               content.width() - 72));
+        p->setPen(dimmed(pal, kTextTertiary));
+        p->drawText(QRect(content.right() - metaW + 1, y, metaW, tfm.height()),
+                    Qt::AlignRight | Qt::AlignVCenter, tfm.elidedText(metaText, Qt::ElideRight, metaW));
+        const int room = content.width() - metaW - 12;
+        p->setPen(dimmed(pal, kTextSecondary));
+        p->drawText(QRect(content.left(), y, room, tfm.height()), Qt::AlignLeft | Qt::AlignVCenter,
+                    tfm.elidedText(where, Qt::ElideRight, room));
     } else if (!isDraft) {
         QStringList meta;
         const int count = index.data(BufferListModel::ItemCountRole).toInt();

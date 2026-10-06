@@ -165,7 +165,17 @@ void MainWindow::buildUi()
     // own on the right), so it is given the same on the right, and what it
     // centres is centred on the window.
     emptyState_->setContentsMargins(0, 0, tokens::kWindowMargin, 0);
-    connect(emptyState_, &EmptyStateView::actionTriggered, this, &MainWindow::goHome);
+    // The empty state's one button: back home, or — when a search found
+    // nothing among the live napkins but something in the trash — into the
+    // trash with the same search.
+    connect(emptyState_, &EmptyStateView::actionTriggered, this, [this] {
+        if (emptyAction_ == EmptyAction::SearchTrash) {
+            if (trashToggle_) trashToggle_->setChecked(true);
+            else              showTrash(true);
+        } else {
+            goHome();
+        }
+    });
 
     canvas_ = new ItemCanvas(thumbs_, blobs_);
 
@@ -370,6 +380,7 @@ void MainWindow::buildUi()
             [this](const QList<ItemId>& ids) { removeItems(ids, false); });
     connect(canvas_, &ItemCanvas::cutRequested, this,
             [this](const QList<ItemId>& ids) { removeItems(ids, true); });
+    connect(canvas_, &ItemCanvas::restoreRequested, this, &MainWindow::restoreTrashedCards);
     connect(canvas_, &ItemCanvas::imagePasted, this,
             [this](const QByteArray& bytes, const QString& mime) {
                 addImageToCurrent(bytes, mime, QString());
@@ -680,7 +691,14 @@ void MainWindow::buildAppMenu()
     undo->setObjectName(QStringLiteral("undoAction"));
     undo->setShortcut(QKeySequence::Undo);
     bind(undo);
-    connect(undo, &QAction::triggered, this, [this] { toast_->undoNow(); });
+    // With nothing left to undo it says so, and where things went: the offer
+    // lasts as long as its toast, and a Ctrl+Z after that did nothing at all,
+    // which read as "undo is broken" (usability test, 2026-10-06).
+    connect(undo, &QAction::triggered, this, [this] {
+        if (!toast_->undoNow())
+            toast_->inform(tr("Nothing to undo. Deleted things stay in the trash for %1 days.")
+                               .arg(BufferService::trashRetentionDays()));
+    });
     // Greyed out only while the menu is open: a disabled action's shortcut does
     // not fire, so leaving it disabled would kill Ctrl+Z until the next visit.
     connect(menu, &QMenu::aboutToShow, this, [this, undo] { undo->setEnabled(toast_->hasOffer()); });
@@ -999,6 +1017,9 @@ void MainWindow::restoreRow(int row)
     const BufferId id = model_->idAt(row);
     if (id == kNoBuffer) return;
     BufferId target = id;
+    std::vector<ItemId> moved;   // for the Undo, when they went into another napkin
+    for (const Item& item : items_.listForBuffer(id)) moved.push_back(item.id);
+    const bool revives = homeIsInTrash(id);
     if (!guarded(tr("Could not restore that napkin"), [&] { target = service_.restore(id); })) return;
 
     // The restored napkin has left the trash, so it must leave the board too.
@@ -1010,10 +1031,11 @@ void MainWindow::restoreRow(int row)
     }
     reloadPreservingSelection();
     updateEmptyTrashButton();
+    view_->setFocus(Qt::OtherFocusReason);   // not the search box: see removeItems
 
     // Restore used to happen in silence; now it says where things went.
     if (target != id) {
-        toast_->inform(tr("Restored to “%1”").arg(napkinName(target)));
+        offerUndoOfRestore(target, moved, revives);
     } else {
         toast_->offer(tr("“%1” restored").arg(napkinName(id)), [this, id] {
             guarded(tr("Could not undo that"), [&] { if (!service_.trash(id)) service_.trashConfirmed(id); });
@@ -1100,8 +1122,10 @@ void MainWindow::sweepForTest(const QList<BufferId>& chosen)
 // the menu left the button on the ordinary napkin list.
 void MainWindow::updateEmptyTrashButton()
 {
+    // Whatever the list happens to show: a search in the trash that matched
+    // nothing hid the button, and it stayed hidden after the search was cleared.
     emptyTrashButton_->setVisible(model_->mode() == BufferListModel::Mode::Trash
-                                  && model_->rowCount() > 0);
+                                  && buffers_.countTrash() > 0);
 }
 
 void MainWindow::showTrash(bool trash)
@@ -1109,6 +1133,7 @@ void MainWindow::showTrash(bool trash)
     flushAndReportFailure();
     toast_->dismiss();
     model_->setMode(trash ? BufferListModel::Mode::Trash : BufferListModel::Mode::Live);
+    canvas_->setInTrash(trash);
     updateEmptyTrashButton();
     // Read each time: the retention is a setting.
     if (trashToggle_)
@@ -1312,6 +1337,62 @@ void MainWindow::removeTrashedItems(const QList<ItemId>& ids, bool cut)
         model_->invalidatePreview(buffer);
     }
     updateEmptyTrashButton();
+    toast_->inform(n == 1 ? tr("1 card deleted permanently") : tr("%1 cards deleted permanently").arg(n));
+}
+
+void MainWindow::offerUndoOfRestore(BufferId target, const std::vector<ItemId>& restored,
+                                    bool revived)
+{
+    const int n = int(restored.size());
+    const QString where = napkinName(target);
+    // When the napkin itself came back out of the trash with them, that is
+    // said — the tester saw the trash empty and was told only "1 card
+    // restored" — and Undo sends the napkin back too.
+    const QString cards = n == 1 ? tr("1 card") : tr("%1 cards").arg(n);
+    toast_->offer(revived ? tr("“%1” is back from the trash, with %2").arg(where, cards)
+                          : tr("%1 restored to “%2”").arg(cards, where),
+                  [this, target, restored, revived] {
+        guarded(tr("Could not undo that"), [&] {
+            if (revived) { if (!service_.trash(target)) service_.trashConfirmed(target); }
+            else         service_.trashItems(target, restored);
+        });
+        if (editingBuffer_ == target) canvas_->setItems(items_.listForBuffer(target));
+        reloadPreservingSelection();
+        updateEmptyTrashButton();
+    });
+}
+
+// Whether restoring `trashed` will bring its home napkin out of the trash too.
+bool MainWindow::homeIsInTrash(BufferId trashed)
+{
+    const auto b = buffers_.find(trashed);
+    if (!b || !b->restoresTo) return false;
+    const auto home = buffers_.find(*b->restoresTo);
+    return home && home->inTrash();
+}
+
+// Cards chosen inside something in the trash, put back where they belong
+// without restoring the rest (usability test, 2026-10-06: the only way to get
+// one card back was to restore the whole set and delete the others again).
+void MainWindow::restoreTrashedCards(const QList<ItemId>& ids)
+{
+    const BufferId from = editingBuffer_;
+    const auto trashed = from == kNoBuffer ? std::nullopt : buffers_.find(from);
+    if (ids.isEmpty() || !trashed || !trashed->inTrash()) return;
+    const std::vector<ItemId> chosen(ids.begin(), ids.end());
+    const bool revives = homeIsInTrash(from);
+    BufferId target = kNoBuffer;
+    if (!guarded(tr("Could not restore those cards"),
+                 [&] { target = service_.restoreItems(from, chosen); }))
+        return;
+    if (target == kNoBuffer) return;
+
+    reloadPreservingSelection();   // the set may now be gone; the latest opens then
+    if (editingBuffer_ == from && buffers_.find(from) && buffers_.find(from)->inTrash())
+        canvas_->setItems(items_.listForBuffer(from));
+    updateEmptyTrashButton();
+    view_->setFocus(Qt::OtherFocusReason);
+    offerUndoOfRestore(target, chosen, revives && target != from);
 }
 
 void MainWindow::trashRow(int row)
@@ -1325,7 +1406,10 @@ void MainWindow::trashRow(int row)
         // action; Delete destroys, with a confirmation because it is final.
         QMessageBox box(this);
         box.setWindowTitle(tr("Delete permanently?"));
-        box.setText(tr("Delete this napkin permanently?"));
+        // Named: "this napkin" in a dialog that covers the list leaves you
+        // guessing which one you pressed Delete on.
+        const QString doomedName = napkinName(id);
+        box.setText(tr("Delete “%1” permanently?").arg(doomedName));
         box.setInformativeText(tr("This cannot be undone."));
         box.setIcon(QMessageBox::Warning);
         box.addButton(QMessageBox::Cancel);
@@ -1341,6 +1425,8 @@ void MainWindow::trashRow(int row)
         sweeper_->start();   // reclaim its blobs and thumbnails, off the UI thread
         reloadPreservingSelection();
         updateEmptyTrashButton();
+        view_->setFocus(Qt::OtherFocusReason);
+        toast_->inform(tr("“%1” deleted permanently").arg(doomedName));
         return;
     }
 
@@ -1372,6 +1458,7 @@ void MainWindow::trashRow(int row)
         canvas_->showNothingSelected();
     }
     reloadPreservingSelection();
+    view_->setFocus(Qt::OtherFocusReason);   // not the search box: see removeItems
 
     // Confirming the deletion of a kept buffer releases the keep, so undo has to
     // put it back — otherwise the user recovers a buffer that quietly lost the
@@ -1385,6 +1472,10 @@ void MainWindow::trashRow(int row)
             }))
             return;
         reloadPreservingSelection();
+        // Back on the napkin that came back, with the keys in the list.
+        if (const int row = model_->rowForId(state.id); row >= 0)
+            view_->setCurrentIndex(model_->index(row, 0));
+        view_->setFocus(Qt::OtherFocusReason);
     });
 }
 
@@ -1399,7 +1490,7 @@ void MainWindow::showContextMenu(int row, const QPoint& globalPos)
     if (model_->mode() == BufferListModel::Mode::Trash) {
         menu.addAction(tr("Restore\tR"), this, [this, row] { restoreRow(row); });
         menu.addSeparator();
-        menu.addAction(tr("Delete permanently\tDel"), this, [this, row] { trashRow(row); });
+        menu.addAction(tr("Delete permanently…\tDel"), this, [this, row] { trashRow(row); });
     } else {
         // Only actions that apply: no greyed-out rows, no giant toolbar.
         // Pin and Keep both sound like "important", so each says what it does
@@ -1428,12 +1519,26 @@ void MainWindow::updateEmptyState()
         // pasted paragraph in the search box must not become the headline.
         QString shown = model_->query();
         if (shown.size() > 42) shown = shown.left(41) + QChar(0x2026);
+        // A live search that finds nothing says so when the trash has it: an
+        // old note searched for and "not found" while it sat in the trash
+        // looked like it was gone (usability test, 2026-10-06).
+        int inTrash = 0;
+        if (model_->mode() == BufferListModel::Mode::Live)
+            guarded(tr("Could not search the trash"), [&] {
+                inTrash = int(searchBuffers(db_, model_->query(), 100, true).size());
+            });
+        emptyAction_ = inTrash > 0 ? EmptyAction::SearchTrash : EmptyAction::GoHome;
         emptyState_->setContent({}, tr("Nothing matches “%1”").arg(shown),
-                                tr("Search looks at your text and at your filenames."),
-                                tr("Clear search"));
+                                inTrash == 1 ? tr("One napkin in the trash matches.")
+                                : inTrash > 1 ? tr("%1 napkins in the trash match.").arg(inTrash)
+                                : model_->mode() == BufferListModel::Mode::Trash
+                                    ? tr("Search here looks only at what is in the trash.")
+                                    : tr("Search looks at your text and at your filenames."),
+                                inTrash > 0 ? tr("Look in the trash") : tr("Clear search"));
         stack_->setCurrentIndex(2);
         return;
     }
+    emptyAction_ = EmptyAction::GoHome;
     if (model_->mode() == BufferListModel::Mode::Trash) {
         emptyState_->setContent(QStringLiteral(":/resources/icons/trash-empty-256.png"),
                           tr("The trash can is empty"),
@@ -1715,10 +1820,20 @@ void MainWindow::emptyTrash()
     if (count == 0) return;
 
     QMessageBox box(this);
+    // Says what is there: a group of cards deleted from a napkin is not a
+    // napkin, and "Delete 1 napkin" for one stray card read as wrong.
+    int napkins = 0, cards = 0;
+    for (const Buffer& b : buffers_.listTrash()) {
+        if (b.restoresTo) cards += items_.countForBuffer(b.id);
+        else              ++napkins;
+    }
+    QStringList parts;
+    if (napkins > 0) parts << (napkins == 1 ? tr("1 napkin") : tr("%1 napkins").arg(napkins));
+    if (cards > 0)   parts << (cards == 1 ? tr("1 card deleted from another napkin")
+                                          : tr("%1 cards deleted from other napkins").arg(cards));
     box.setWindowTitle(tr("Empty the trash?"));
-    box.setText(count == 1 ? tr("Delete 1 napkin permanently?")
-                           : tr("Delete %1 napkins permanently?").arg(count));
-    box.setInformativeText(tr("This cannot be undone."));
+    box.setText(tr("Delete everything in the trash permanently?"));
+    box.setInformativeText(tr("%1. This cannot be undone.").arg(parts.join(tr(" and "))));
     box.setIcon(QMessageBox::Warning);
     box.addButton(QMessageBox::Cancel);
     auto* confirm = box.addButton(tr("Delete permanently"), QMessageBox::DestructiveRole);
@@ -1862,6 +1977,16 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
     // Ctrl+Shift+V is the deliberate "paste into the search box". Line breaks
     // collapse to spaces: the box is one line, and a query with newlines in it
     // matches nothing a person would expect.
+    // Ctrl+Z while Undo is on offer takes back the delete, even from the search
+    // box. The box kept Ctrl+Z for its own text, so after a delete that left
+    // focus there, Ctrl+Z undid a search instead and the deletion stood
+    // (usability test, 2026-10-06). A note being written still has its own
+    // undo: only the search box gives way, and only while there is an offer.
+    if (watched == search_ && event->type() == QEvent::KeyPress
+        && static_cast<QKeyEvent*>(event)->matches(QKeySequence::Undo) && toast_->hasOffer()) {
+        toast_->undoNow();
+        return true;
+    }
     if (watched == search_ && event->type() == QEvent::KeyPress) {
         auto* key = static_cast<QKeyEvent*>(event);
         if (key->key() == Qt::Key_V
@@ -1982,11 +2107,16 @@ void MainWindow::removeItems(const QList<ItemId>& ids, bool cut)
         editingBuffer_ = kNoBuffer;
         canvas_->showNothingSelected();
         reloadPreservingSelection();
+        // Focus goes to the list, where the napkin was. Left to Qt it fell
+        // through to the next widget in the chain — the search box — and the
+        // next Ctrl+Z undid the search instead of the delete.
+        view_->setFocus(Qt::OtherFocusReason);
     } else {
         // Keep working where you were: land on whatever now occupies the first
         // removed slot, or the last item if you deleted off the end.
         canvas_->setItems(items_.listForBuffer(buffer), firstRemovedIndex);
         model_->invalidatePreview(buffer);
+        canvas_->setFocus(Qt::OtherFocusReason);
     }
 
     // Only a new cut replaces a pending one. A delete in between used to
@@ -2014,15 +2144,20 @@ void MainWindow::removeItems(const QList<ItemId>& ids, bool cut)
     const QString message =
         cut                 ? (n == 1 ? tr("Item cut from “%1”").arg(name)
                                       : tr("%1 items cut from “%2”").arg(n).arg(name))
-        : trashed.wholeNapkin ? tr("“%1” moved to trash").arg(name)
+        // Said, because a card was what was deleted: a napkin vanishing on
+        // Delete of one card surprised the usability tester.
+        : trashed.wholeNapkin ? (n == 1 ? tr("That was its last card — “%1” moved to trash").arg(name)
+                                        : tr("Those were all its cards — “%1” moved to trash").arg(name))
         : n == 1            ? tr("Item moved to trash from “%1”").arg(name)
                             : tr("%1 items moved to trash from “%2”").arg(n).arg(name);
 
     const int offer = toast_->offer(message, [this, buffer, removed, before, trashed] {
         if (!guarded(tr("Could not undo that"), [&] {
                 service_.untrashItems(buffer, trashed, removed);
-                if (trashed.wholeNapkin && before) {
-                    if (before->kept) service_.setKept(buffer, true);
+                if (before) {
+                    if (trashed.wholeNapkin && before->kept) service_.setKept(buffer, true);
+                    // As if it never happened: the delete stamped the napkin
+                    // "just now" and moved it up the list, and undo left it there.
                     buffers_.setModifiedAt(buffer, before->modifiedAt);
                 }
             }))
@@ -2033,6 +2168,7 @@ void MainWindow::removeItems(const QList<ItemId>& ids, bool cut)
             view_->setCurrentIndex(model_->index(row, 0));
             if (editingBuffer_ == buffer) canvas_->setItems(items_.listForBuffer(buffer), -1);
         }
+        view_->setFocus(Qt::OtherFocusReason);
     });
     if (pendingCut_.holder != kNoBuffer) pendingCut_.offer = offer;
 }

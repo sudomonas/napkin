@@ -601,6 +601,16 @@ void ItemCanvas::contextMenuEvent(QContextMenuEvent* e)
             menu.addAction(tr("Open\tEnter"), this, [this, id = card->itemId()] { emit imageActivated(id); });
         menu.addSeparator();
     }
+    if (inTrash_) {
+        menu.addAction(single ? tr("Restore this card") : tr("Restore these cards"), this,
+                       [this] { if (!selected_.isEmpty()) emit restoreRequested(selection()); })
+            ->setObjectName(QStringLiteral("restoreCardsAction"));
+        menu.addAction(tr("Copy\tCtrl+C"), this, [this] { copySelection(); });
+        menu.addSeparator();
+        menu.addAction(tr("Delete permanently…\tDel"), this, [this] { deleteSelection(); });
+        menu.exec(e->globalPos());
+        return;
+    }
     menu.addAction(tr("Copy\tCtrl+C"), this, [this] { copySelection(); });
     menu.addAction(tr("Cut\tCtrl+X"), this, [this] { cutSelection(); });
     menu.addSeparator();

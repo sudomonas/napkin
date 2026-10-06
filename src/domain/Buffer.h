@@ -17,6 +17,9 @@ struct Buffer {
     // Chosen by the user, and never required. Empty means the napkin is titled
     // from its contents, as it always was (§3).
     QString   name;
+    // In the trash and holding items deleted from another napkin: that napkin,
+    // where they go back to. Shown in the trash as "From …".
+    std::optional<BufferId> restoresTo;
 
     bool isPersisted() const { return id != kNoBuffer; }
     bool inTrash() const { return deletedAt.has_value(); }

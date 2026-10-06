@@ -288,7 +288,12 @@ private slots:
         f.select(id);
         const ItemId gone = f.items.listForBuffer(id)[1].id;
         f.window.removeItems({gone});
-        f.service.trash(id);                                      // the original goes too
+        // The original deleted for good. (Only trashed, it now comes back with
+        // its card — restoringCardsWhoseNapkinIsInTheTrashBringsTheNapkinBack —
+        // rather than the card becoming a napkin of its own, which split
+        // napkins in two in the 2026-10-06 usability test.)
+        f.service.trash(id);
+        f.buffers.hardDeleteEvenIfKept(id);
         BufferId holder = kNoBuffer;
         for (const auto& b : f.buffers.listTrash()) if (b.id != id) holder = b.id;
         QVERIFY(holder != kNoBuffer);
@@ -327,7 +332,7 @@ private slots:
         for (const auto& i : f.items.listForBuffer(id)) all << i.id;
 
         f.window.removeItems(all);
-        QCOMPARE(toastText(f), QStringLiteral("“Investigate this bug” moved to trash"));
+        QCOMPARE(toastText(f), QStringLiteral("Those were all its cards — “Investigate this bug” moved to trash"));
         QCOMPARE(f.buffers.countTrash(), 1);
         QCOMPARE(f.buffers.listTrash().front().id, id);          // the napkin itself
         QCOMPARE(int(f.items.listForBuffer(id).size()), 2);      // not an empty shell

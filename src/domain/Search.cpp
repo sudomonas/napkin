@@ -27,7 +27,7 @@ QString toMatchExpression(const QString& typed)
     return terms.join(QLatin1Char(' '));
 }
 
-std::vector<SearchHit> searchBuffers(Database& db, const QString& typed, int limit)
+std::vector<SearchHit> searchBuffers(Database& db, const QString& typed, int limit, bool inTrash)
 {
     const QString match = toMatchExpression(typed);
     if (match.isEmpty()) return {};
@@ -53,7 +53,9 @@ std::vector<SearchHit> searchBuffers(Database& db, const QString& typed, int lim
     // behaviour of returning the snippet from the row that produced the
     // minimum: the snippet shown is the best-matching item's, not an arbitrary
     // one.
-    Statement s(db,
+    const QString where = QString::fromLatin1(inTrash ? "NOT NULL" : "NULL");
+    // fromUtf8: the snippet's ellipsis is not Latin-1.
+    const QByteArray sql = QString::fromUtf8(
         "WITH hits AS ("
         "  SELECT rowid AS item_id,"
         "         bm25(items_fts) AS rank,"
@@ -63,10 +65,11 @@ std::vector<SearchHit> searchBuffers(Database& db, const QString& typed, int lim
         "  FROM hits h"
         "  JOIN items     ON items.id = h.item_id"
         "  JOIN buffers b ON b.id = items.buffer_id"
-        " WHERE b.deleted_at IS NULL"
+        " WHERE b.deleted_at IS %1"
         " GROUP BY b.id"
         " ORDER BY MIN(h.rank) ASC, b.modified_at DESC"
-        " LIMIT ?");
+        " LIMIT ?").arg(where).toUtf8();
+    Statement s(db, sql.constData());
     s.bind(1, match).bind(2, limit);
 
     std::vector<SearchHit> hits;
@@ -84,8 +87,10 @@ std::vector<SearchHit> searchBuffers(Database& db, const QString& typed, int lim
     // compared: every word typed must appear in the name. A napkin found by
     // name goes first — the user said what it is called.
     const QStringList words = typed.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
-    Statement named(db, "SELECT id, name FROM buffers"
-                        " WHERE deleted_at IS NULL AND name IS NOT NULL");
+    Statement named(db, inTrash ? "SELECT id, name FROM buffers"
+                                  " WHERE deleted_at IS NOT NULL AND name IS NOT NULL"
+                                : "SELECT id, name FROM buffers"
+                                  " WHERE deleted_at IS NULL AND name IS NOT NULL");
     std::vector<SearchHit> byName;
     while (named.step()) {
         const QString name = named.columnText(1);

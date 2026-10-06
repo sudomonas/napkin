@@ -2,6 +2,7 @@
 #include "Clock.h"
 
 #include <QSettings>
+#include <algorithm>
 #include "../data/BufferRepository.h"
 #include "../data/Database.h"
 #include "../data/ItemRepository.h"
@@ -52,6 +53,50 @@ void BufferService::updateTextItem(BufferId bufferId, ItemId itemId, const QStri
     items_.updateText(itemId, text);
     buffers_.touch(bufferId);
     tx.commit();
+}
+
+BufferId BufferService::restoreItems(BufferId from, const std::vector<ItemId>& ids)
+{
+    const auto trashed = buffers_.find(from);
+    if (!trashed || !trashed->inTrash())
+        throw DbError(QStringLiteral("restoring items from a napkin that is not in the trash"));
+    std::vector<ItemId> mine;
+    for (ItemId id : ids)
+        if (const auto item = items_.find(id); item && item->bufferId == from) mine.push_back(id);
+    if (mine.empty()) return kNoBuffer;
+    if (int(mine.size()) >= items_.countForBuffer(from)) return restore(from);
+
+    Transaction tx(db_);
+    BufferId target = kNoBuffer;
+    if (trashed->restoresTo) {
+        const auto home = buffers_.find(*trashed->restoresTo);
+        if (home) {
+            if (home->inTrash()) buffers_.restore(home->id);
+            target = home->id;
+        } else {
+            // Its napkin was deleted for good. The cards come back as a napkin
+            // of their own, and what stays in the trash now belongs to that one.
+            target = buffers_.create();
+            buffers_.setRestoresTo(from, target);
+        }
+    } else {
+        // A whole napkin in the trash, only part of it wanted. It comes back —
+        // the same napkin, its pin, keep and name — holding just these, and the
+        // rest stay in the trash as cards deleted from it.
+        const BufferId rest = buffers_.create();
+        for (const Item& item : items_.listForBuffer(from))
+            if (std::find(mine.begin(), mine.end(), item.id) == mine.end())
+                items_.moveTo(item.id, rest, item.position);
+        buffers_.setRestoresTo(rest, from);
+        buffers_.moveToTrash(rest);
+        buffers_.restore(from);
+        target = from;
+    }
+    for (ItemId id : mine)
+        if (const auto item = items_.find(id)) items_.moveTo(id, target, item->position);
+    if (target != from) buffers_.removeIfEmpty(from);
+    tx.commit();
+    return target;
 }
 
 bool BufferService::deleteTrashedItems(BufferId from, const std::vector<ItemId>& ids)
@@ -137,14 +182,18 @@ BufferId BufferService::restore(BufferId id)
     BufferId target = id;
     const auto origin = buffers_.restoresTo(id);
     const auto home = origin ? buffers_.find(*origin) : std::nullopt;
-    if (home && !home->inTrash()) {
+    if (home) {
+        // Back into the napkin they came from — brought out of the trash with
+        // them if it is there too. Restoring the cards alone used to make them
+        // a napkin of their own, splitting "Read later" in two for good
+        // (usability test, 2026-10-06).
+        if (home->inTrash()) buffers_.restore(*origin);
         for (const Item& item : items_.listForBuffer(id)) items_.moveTo(item.id, *origin, item.position);
         buffers_.removeIfEmpty(id);
-        buffers_.touch(*origin);
-        target = *origin;
+        target = *origin;   // not touched: putting cards back is not a new change
     } else {
-        // Its napkin is gone or in the trash itself: it comes back as a napkin
-        // of its own, and from then on it is one.
+        // Its napkin was deleted for good: it comes back as a napkin of its
+        // own, and from then on it is one.
         buffers_.clearRestoresTo(id);
         buffers_.restore(id);
     }

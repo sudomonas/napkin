@@ -70,7 +70,7 @@ void BufferListModel::reload()
     if (isSearching()) {
         // Ranked by relevance, so the order deliberately differs from the
         // ordinary recency order.
-        for (const auto& hit : searchBuffers(db_, query_, kMaxRows)) {
+        for (const auto& hit : searchBuffers(db_, query_, kMaxRows, mode_ == Mode::Trash)) {
             if (const auto buffer = buffers_.find(hit.bufferId)) {
                 rows.push_back(*buffer);
                 snippets.insert(hit.bufferId, hit.snippet);
@@ -80,9 +80,26 @@ void BufferListModel::reload()
         rows = mode_ == Mode::Live ? buffers_.listLive(kMaxRows) : buffers_.listTrash();
     }
 
+    // Where trashed items came from, said in the trash (usability test,
+    // 2026-10-06: two cards from "Q4 planning" showed up titled by one of
+    // themselves, with nothing to say whose they were).
+    QHash<BufferId, QString> origins;
+    if (mode_ == Mode::Trash) {
+        for (const Buffer& b : rows) {
+            if (!b.restoresTo) continue;
+            const auto origin = buffers_.find(*b.restoresTo);
+            if (!origin) continue;   // deleted for good: it comes back as a napkin of its own
+            const auto counts = items_.countsForBuffer(origin->id);
+            const QString title = derivePreview(items_.previewHead(origin->id), counts.total,
+                                                counts.images, {}, origin->name).primary.simplified();
+            origins.insert(b.id, title.isEmpty() ? tr("Untitled") : title);
+        }
+    }
+
     beginResetModel();
     rows_ = std::move(rows);
     snippets_ = std::move(snippets);
+    origins_ = std::move(origins);
     previewCache_.clear();
     endResetModel();
     emit countChanged(int(rows_.size()));
@@ -167,11 +184,16 @@ QVariant BufferListModel::data(const QModelIndex& index, int role) const
             const int n = int(rows_.size());
             return n == 1 ? tr("1 RESULT") : tr("%1 RESULTS").arg(n);
         }
-        if (mode_ == Mode::Trash) return QStringLiteral("TRASH");
+        // The rule, where the trash is: it used to be said only once the trash
+        // was empty, which is when it no longer mattered.
+        if (mode_ == Mode::Trash)
+            return tr("TRASH · KEPT %1 DAYS").arg(BufferService::trashRetentionDays());
         if (b.pinned) return QStringLiteral("PINNED");
         return isOlder(b) ? QStringLiteral("OLDER") : QStringLiteral("RECENT");
     }
     case IsOlderRole: return isOlder(b);
+    case OriginRole:  return origins_.value(b.id);
+    case DeletedAtRole: return QVariant::fromValue(b.deletedAt.value_or(0));
     case Qt::ToolTipRole: {
         // The pin and keep glyphs are small and similar in weight; hovering a
         // row says in words which it carries and what that means.
@@ -188,7 +210,16 @@ QVariant BufferListModel::data(const QModelIndex& index, int role) const
     const BufferPreview p = isDraft ? draftPreview_ : previewFor(b.id);
 
     switch (role) {
-    case PrimaryRole:    return p.primary;
+    case PrimaryRole:
+        // Cards deleted from a napkin are titled by where they came from: titled
+        // by their first card, "Action items: Priya…" read as a napkin of that
+        // name (usability test, 2026-10-06). Their own first card is still
+        // shown, on the second line (HeadRole).
+        if (const QString origin = origins_.value(b.id); !origin.isEmpty())
+            return p.itemCount == 1 ? tr("1 card from “%1”").arg(origin)
+                                    : tr("%1 cards from “%2”").arg(p.itemCount).arg(origin);
+        return p.primary;
+    case HeadRole:       return p.primary;
     case SecondaryRole:  return p.secondary;
     case ItemCountRole:  return p.itemCount;
     case HasImageRole:   return p.hasImage();
