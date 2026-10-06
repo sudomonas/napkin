@@ -73,6 +73,15 @@
   </requires>
 
   <releases>
+    <release version="0.2.1" date="2026-10-06" type="development">
+      <description>
+        <p>Deleting items inside the trash works.</p>
+        <ul>
+          <li>Selecting items of a napkin in the trash and pressing Delete now deletes them permanently, after asking. Before, they only disappeared from the screen and came back when the napkin was opened again.</li>
+          <li>Deleting the last items of a napkin in the trash deletes the napkin too.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-10-06" type="development">
       <description>
         <p>Napkin has its own look, the same on Linux and Windows, and a tour of what it can do.</p>
