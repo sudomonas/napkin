@@ -1390,6 +1390,19 @@ Known and not fixed, deliberately or for now:
   other platforms it already includes F11, and one chord listed twice on an
   action is ambiguous and fires nothing. `fullScreenIsF11AndInTheMenu`.
 - *"The trash can is empty"* on the empty trash (asked for).
+- *Deleting items inside the trash did nothing* (user report, after 0.2.0).
+  `removeItems` began with the live-napkin check, which on finding the napkin
+  trashed also blanked the board: the items seemed to vanish, the database was
+  untouched, and clicking the napkin showed them all again. Delete there is now
+  final after a confirmation, as it already was for a whole napkin in the
+  trash, and deleting the last of its items deletes the napkin (items cascade
+  with it — done as the one delete, because `hardDeleteEvenIfKept` opens its
+  own transaction and SQLite does not nest them; the first version did, and
+  failed). A card emptied in the trash takes the same path; Cut there says to
+  restore first. `BufferService::deleteTrashedItems` refuses a live napkin.
+  `deletingItemsInTheTrashIsFinalAndTheLastTakesTheNapkin` fails on the old
+  order (3 items still there, checked). Editing a card's text in the trash
+  was probed and does save, so it was left as it is.
 
 
 ### The three empty screens

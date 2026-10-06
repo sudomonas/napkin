@@ -1265,6 +1265,55 @@ void MainWindow::toggleKeep(int row)
     });
 }
 
+// Items of a napkin that is already in the trash. Delete there is final, as it
+// is for the napkin itself, so it asks first; deleting the last of them takes
+// the napkin too, rather than leaving an empty one that would restore as
+// nothing. A cut cannot move anything out of the trash — Restore does that —
+// so it says so instead of half-working.
+void MainWindow::removeTrashedItems(const QList<ItemId>& ids, bool cut)
+{
+    const BufferId buffer = editingBuffer_;
+    const auto trashed = buffer == kNoBuffer ? std::nullopt : buffers_.find(buffer);
+    if (!trashed || !trashed->inTrash()) return;
+    if (cut) {
+        toast_->inform(tr("Restore the napkin to move things out of the trash"));
+        return;
+    }
+
+    const int total = items_.countForBuffer(buffer);
+    const int n = int(ids.size());
+    const bool all = n >= total;
+    QMessageBox box(this);
+    box.setWindowTitle(tr("Delete permanently?"));
+    box.setText(all ? tr("Delete this napkin and everything on it permanently?")
+                    : n == 1 ? tr("Delete this item permanently?")
+                             : tr("Delete these %1 items permanently?").arg(n));
+    box.setInformativeText(tr("This cannot be undone."));
+    box.setIcon(QMessageBox::Warning);
+    box.addButton(QMessageBox::Cancel);
+    auto* confirm = box.addButton(tr("Delete permanently"), QMessageBox::DestructiveRole);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.exec();
+    if (box.clickedButton() != confirm) return;
+
+    const std::vector<ItemId> doomed(ids.begin(), ids.end());
+    bool napkinGone = false;
+    if (!guarded(tr("Could not delete those items"),
+                 [&] { napkinGone = service_.deleteTrashedItems(buffer, doomed); }))
+        return;
+    sweeper_->start();   // their blobs and thumbnails, off the UI thread
+
+    if (napkinGone) {
+        editingBuffer_ = kNoBuffer;
+        canvas_->showNothingSelected();
+        reloadPreservingSelection();   // opens the next one, or the empty trash
+    } else {
+        canvas_->setItems(items_.listForBuffer(buffer));
+        model_->invalidatePreview(buffer);
+    }
+    updateEmptyTrashButton();
+}
+
 void MainWindow::trashRow(int row)
 {
     const BufferId id = model_->idAt(row);
@@ -1898,7 +1947,16 @@ void MainWindow::openRow(int row)
 
 void MainWindow::removeItems(const QList<ItemId>& ids, bool cut)
 {
-    if (ids.isEmpty() || !currentBufferIsLive()) return;
+    if (ids.isEmpty()) return;
+    // In the trash, before the live check below: that check finds the napkin
+    // trashed and blanks the board, so Delete there made the items vanish from
+    // the screen while nothing changed, and clicking the napkin showed them all
+    // again (user report, 2026-10-06).
+    if (model_->mode() == BufferListModel::Mode::Trash) {
+        removeTrashedItems(ids, cut);
+        return;
+    }
+    if (!currentBufferIsLive()) return;
 
     // Captured first: undo needs each item's original position.
     std::vector<Item> removed;
@@ -1981,7 +2039,14 @@ void MainWindow::removeItems(const QList<ItemId>& ids, bool cut)
 
 void MainWindow::discardItems(const QList<ItemId>& ids)
 {
-    if (ids.isEmpty() || !currentBufferIsLive()) return;
+    if (ids.isEmpty()) return;
+    // A card emptied in the trash: the same final, confirmed delete as Delete
+    // there. The live check below would blank the board and change nothing.
+    if (model_->mode() == BufferListModel::Mode::Trash) {
+        removeTrashedItems(ids, false);
+        return;
+    }
+    if (!currentBufferIsLive()) return;
 
     // Capture before deleting: undo has to hand the content back, not an empty
     // shell. An earlier version deleted the rows and unlinked the blobs at once,

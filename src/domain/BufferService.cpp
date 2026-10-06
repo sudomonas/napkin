@@ -54,6 +54,30 @@ void BufferService::updateTextItem(BufferId bufferId, ItemId itemId, const QStri
     tx.commit();
 }
 
+bool BufferService::deleteTrashedItems(BufferId from, const std::vector<ItemId>& ids)
+{
+    const auto buffer = buffers_.find(from);
+    if (!buffer || !buffer->inTrash())
+        throw DbError(QStringLiteral("refusing to delete items for good from a napkin that is not in the trash"));
+    // Only items that are on this napkin; anything else is not ours to delete.
+    std::vector<ItemId> mine;
+    for (ItemId id : ids)
+        if (const auto item = items_.find(id); item && item->bufferId == from) mine.push_back(id);
+
+    // All of what is left: delete the napkin, and its items go with it (ON
+    // DELETE CASCADE). One statement's transaction — hardDeleteEvenIfKept opens
+    // its own, and SQLite does not nest them, which is what failed when this
+    // deleted the items first inside an outer transaction.
+    if (int(mine.size()) >= items_.countForBuffer(from)) {
+        buffers_.hardDeleteEvenIfKept(from);
+        return true;
+    }
+    Transaction tx(db_);
+    for (ItemId id : mine) items_.remove(id);
+    tx.commit();
+    return false;
+}
+
 void BufferService::removeItem(BufferId bufferId, ItemId itemId)
 {
     Transaction tx(db_);

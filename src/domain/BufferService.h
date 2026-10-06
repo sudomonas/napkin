@@ -58,6 +58,12 @@ public:
         bool wholeNapkin = false;      // holder is the original napkin
     };
     TrashedItems trashItems(BufferId from, const std::vector<ItemId>& ids);
+    // Deleting items from a napkin that is already in the trash is final, as
+    // deleting the napkin there is. When that leaves it empty the napkin goes
+    // too: an empty napkin in the trash would restore as nothing. Returns
+    // whether the napkin was deleted with them. Throws if `from` is not in the
+    // trash — a live napkin's items go to the trash, never straight to nothing.
+    bool deleteTrashedItems(BufferId from, const std::vector<ItemId>& ids);
     // Undo of trashItems: every item goes back to `from` where it was.
     void untrashItems(BufferId from, const TrashedItems& trashed,
                       const std::vector<Item>& originals);

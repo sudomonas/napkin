@@ -108,6 +108,7 @@ public:
     // What Delete and Cut do: the items go to the trash (see
     // BufferService::trashItems), with Undo offered on the toast.
     void removeItems(const QList<ItemId>& ids, bool cut = false);
+    void removeTrashedItems(const QList<ItemId>& ids, bool cut);   // Delete in the trash: for good
     // A text card the user emptied: there is nothing left to recover, so the
     // item goes for good rather than into the trash as a blank napkin.
     void discardItems(const QList<ItemId>& ids);

@@ -3,6 +3,8 @@
 #include <QStackedWidget>
 #include "../src/ui/EmptyStateView.h"
 #include "GuiFixture.h"
+#include <QTimer>
+#include <QMessageBox>
 #include "../src/domain/Clock.h"
 #include <QtTest>
 
@@ -314,6 +316,74 @@ private slots:
         f.window.findChild<QPushButton*>(QStringLiteral("trashToggle"))->click();
         QTRY_VERIFY(f.canvas()->showingANapkin());
         QCOMPARE(f.model()->idAt(f.view()->currentIndex().row()), latest);
+    }
+
+    // User report, 2026-10-06: deleting items from a napkin in the trash made
+    // them vanish from the board while nothing changed — clicking the napkin
+    // showed them all again, and the napkin stayed. Delete in the trash is
+    // final, after asking; the last item takes the napkin with it.
+    void deletingItemsInTheTrashIsFinalAndTheLastTakesTheNapkin()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (const char* t : {"one", "two", "three", "four"})
+            f.service.appendTo(id, Item::makeText(QString::fromLatin1(t)));
+        f.model()->reload();
+        f.select(id);
+        // Delete three of them on the live napkin: they go to the trash together.
+        auto cards = f.canvas()->findChildren<TextItemCard*>();
+        QCOMPARE(cards.size(), 4);
+        f.canvas()->selectAll();
+        QTest::mouseClick(cards.first(), Qt::LeftButton, Qt::ControlModifier);   // keep one back
+        f.canvas()->deleteSelection();
+        QCOMPARE(f.items.countForBuffer(id), 1);
+
+        f.window.findChild<QPushButton*>(QStringLiteral("trashToggle"))->click();
+        QTRY_VERIFY(f.canvas()->showingANapkin());          // the holder opens
+        const BufferId holder = f.model()->idAt(f.view()->currentIndex().row());
+        QVERIFY(holder != id);
+        QCOMPARE(f.items.countForBuffer(holder), 3);
+
+        // Confirm whatever asks, as a user pressing "Delete permanently" would.
+        QStringList errors;
+        QTimer confirm;
+        QObject::connect(&confirm, &QTimer::timeout, [&errors] {
+            // Only the confirmation is answered. An error dialog is closed and
+            // recorded, so a failure fails the test instead of hanging it.
+            if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                bool confirmed = false;
+                for (auto* b : box->buttons())
+                    if (box->buttonRole(b) == QMessageBox::DestructiveRole) { b->click(); confirmed = true; }
+                if (!confirmed) { errors << box->text(); box->close(); }
+            }
+        });
+        confirm.start(20);
+
+        // One item: gone for good, the rest still there.
+        QTest::mouseClick(f.canvas()->findChildren<TextItemCard*>().first(), Qt::LeftButton);
+        f.canvas()->deleteSelection();
+        QCOMPARE(f.items.countForBuffer(holder), 2);
+        QCOMPARE(f.canvas()->findChildren<TextItemCard*>().size(), 2);
+
+        // Reopening it shows what is really there, not the deleted item again.
+        f.view()->selectionModel()->clearCurrentIndex();
+        QTRY_VERIFY(f.canvas()->showingANapkin());
+        QCOMPARE(f.canvas()->findChildren<TextItemCard*>().size(), 2);
+
+        // The rest: the napkin goes with them.
+        f.canvas()->selectAll();
+        f.canvas()->deleteSelection();
+        QVERIFY2(errors.isEmpty(), qPrintable(errors.join(QLatin1Char('|'))));
+        QVERIFY2(!f.buffers.find(holder), "an empty napkin was left in the trash");
+        QCOMPARE(f.items.countForBuffer(holder), 0);
+        QCOMPARE(f.items.countForBuffer(id), 1);         // the live napkin is untouched
+
+        // And deleting for good refuses a napkin that is not in the trash: a
+        // live napkin's items go to the trash, never straight to nothing.
+        const auto kept = f.items.listForBuffer(id);
+        QVERIFY_THROWS_EXCEPTION(napkin::DbError,
+                                 f.service.deleteTrashedItems(id, {kept.front().id}));
+        QCOMPARE(f.items.countForBuffer(id), 1);
     }
 
     void theMouseBackButtonLeavesTheTrash()
