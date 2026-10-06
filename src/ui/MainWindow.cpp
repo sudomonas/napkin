@@ -20,10 +20,15 @@
 #include "../domain/Clock.h"
 #include "../domain/Preview.h"
 #include "Icons.h"
+#include "NapkinStyle.h"
+#include "SurfacePanel.h"
+#include "TourDialog.h"
 #include "../domain/Search.h"
 #include "../domain/TimeFormat.h"
 #include "../app/Paths.h"
 #include "../media/BlobGc.h"
+#include "BackgroundSaver.h"
+#include "../app/GlobalShortcut.h"
 #include "../media/BlobStore.h"
 #include "../media/ClipboardContent.h"
 #include "../media/ImageFormats.h"
@@ -34,12 +39,18 @@
 #include <QAction>
 #include <memory>
 #include <QApplication>
+#include <QInputDialog>
+#include <QMouseEvent>
 #include <QClipboard>
 #include <QFileDialog>
 #include <QMenu>
 #include <QKeyEvent>
 #include <QSignalBlocker>
-#include <QMenuBar>
+#include <QActionGroup>
+#include <QButtonGroup>
+#include <QGridLayout>
+#include <QPainter>
+#include <QPainterPath>
 #include <QToolButton>
 #include <QMimeData>
 #include <QLineEdit>
@@ -53,8 +64,60 @@
 #include <QVBoxLayout>
 #include <QScreen>
 #include <algorithm>
+#include <limits>
 
 namespace napkin {
+
+namespace {
+
+// The track of the Home / Trash switch: a pill of the surface colour that the
+// chosen segment is cut out of (NapkinStyle draws the segments).
+class SwitchTrack : public QWidget {
+public:
+    using QWidget::QWidget;
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        QPainterPath path;
+        path.addRoundedRect(r, r.height() / 2, r.height() / 2);
+        p.fillPath(path, palette().color(QPalette::Button));
+    }
+};
+
+QToolButton* roundButton(const QString& name, const QString& label)
+{
+    auto* b = new QToolButton;
+    b->setObjectName(name);
+    b->setProperty(NapkinStyle::kShapeProperty, QStringLiteral("circle"));
+    b->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    b->setFixedSize(tokens::kHeaderControlH, tokens::kHeaderControlH);
+    b->setCursor(Qt::PointingHandCursor);
+    b->setFocusPolicy(Qt::TabFocus);
+    b->setToolTip(label);
+    b->setAccessibleName(label);
+    return b;
+}
+
+}  // namespace
+
+namespace {
+
+// Above this many characters a timed autosave is written on the worker. A
+// 256 KB note saves in about 3 ms; it is the multi-megabyte ones that froze.
+constexpr qsizetype kBackgroundSaveChars = 256 * 1024;
+
+// trimmed().isEmpty() without copying the whole note to find out.
+bool isBlank(const QString& text)
+{
+    for (const QChar c : text)
+        if (!c.isSpace()) return false;
+    return true;
+}
+
+}  // namespace
 
 MainWindow::MainWindow(Database& db, BufferRepository& buffers, ItemRepository& items,
                        BufferService& service, BlobStore& blobs, Thumbnailer& thumbs,
@@ -64,6 +127,7 @@ MainWindow::MainWindow(Database& db, BufferRepository& buffers, ItemRepository& 
 {
     buildUi();
     applyTraySetting();   // the setting is read at startup, not only on change
+    applyShortcutSetting();
 }
 
 void MainWindow::buildUi()
@@ -75,6 +139,8 @@ void MainWindow::buildUi()
 
     // --- the start page ------------------------------------------------------
     welcome_ = new WelcomeView;
+    welcome_->setContentsMargins(0, 0, tokens::kWindowMargin, 0);   // centred on the window, as the empty states
+    connect(welcome_, &WelcomeView::tourRequested, this, &MainWindow::showTour);
     connect(welcome_, &WelcomeView::newBufferRequested, this, &MainWindow::newDraft);
     connect(welcome_, &WelcomeView::pasteRequested, this, &MainWindow::pasteFromClipboard);
     connect(welcome_, &WelcomeView::newTextRequested, this, [this] {
@@ -95,6 +161,10 @@ void MainWindow::buildUi()
     // Not "you have nothing yet", so not the start page — but a bare line of
     // text would leave you on a screen with nothing to do and no way back.
     emptyState_ = new EmptyStateView;
+    // The page has the window margin on its left only (the board supplies its
+    // own on the right), so it is given the same on the right, and what it
+    // centres is centred on the window.
+    emptyState_->setContentsMargins(0, 0, tokens::kWindowMargin, 0);
     connect(emptyState_, &EmptyStateView::actionTriggered, this, &MainWindow::goHome);
 
     canvas_ = new ItemCanvas(thumbs_, blobs_);
@@ -106,7 +176,7 @@ void MainWindow::buildUi()
     bannerRow->setContentsMargins(tokens::kPadX, 8, tokens::kPadX, 8);
     filterLabel_ = new QLabel;
     auto* showAll = new QPushButton(tr("Show all"));
-    showAll->setFlat(true);
+    showAll->setProperty(NapkinStyle::kShapeProperty, QStringLiteral("pill"));
     showAll->setCursor(Qt::PointingHandCursor);
     showAll->setObjectName(QStringLiteral("showAllButton"));
     connect(showAll, &QPushButton::clicked, this, [this] { canvas_->setShowAll(true); });
@@ -145,16 +215,19 @@ void MainWindow::buildUi()
     // thing that happens on its own is this one quiet line appearing.
     sweepNudge_ = new QWidget;
     auto* nudgeRow = new QHBoxLayout(sweepNudge_);
-    nudgeRow->setContentsMargins(16, 8, 10, 8);
+    nudgeRow->setContentsMargins(16, 8, 16, 8);
     sweepLabel_ = new QLabel;
     auto* review = new QPushButton(tr("Review"));
-    review->setFlat(true);
+    review->setProperty(NapkinStyle::kShapeProperty, QStringLiteral("pill"));
     review->setCursor(Qt::PointingHandCursor);
     review->setObjectName(QStringLiteral("sweepReviewButton"));
     auto* dismissNudge = new QPushButton(QStringLiteral("✕"));
     dismissNudge->setFlat(true);
+    dismissNudge->setAccessibleName(tr("Dismiss"));
+    dismissNudge->setFixedSize(tokens::kFieldHeight, tokens::kFieldHeight);   // a round target, not a sliver
     dismissNudge->setCursor(Qt::PointingHandCursor);
     dismissNudge->setToolTip(tr("Not now"));
+    dismissNudge->setProperty(NapkinStyle::kShapeProperty, QStringLiteral("circle"));
     connect(review, &QPushButton::clicked, this, &MainWindow::reviewSweep);
     connect(dismissNudge, &QPushButton::clicked, this, [this] {
         nudgeDismissed_ = true;
@@ -166,10 +239,21 @@ void MainWindow::buildUi()
     nudgeRow->addWidget(dismissNudge);
     sweepNudge_->hide();
 
-    auto* listSide = new QWidget;
+    // The sidebar is a surface on the window, as the board's cards are; the
+    // list inside it is transparent and its rows are drawn on the panel.
+    auto* listSide = new SurfacePanel;
+    listSide->setObjectName(QStringLiteral("sidebar"));
     auto* listColumn = new QVBoxLayout(listSide);
-    listColumn->setContentsMargins(0, 0, 0, 0);
+    listColumn->setContentsMargins(0, tokens::kGapTight, 0, tokens::kGapTight);
     listColumn->setSpacing(0);
+    view_->setAutoFillBackground(false);
+    view_->viewport()->setAutoFillBackground(false);
+    // No bar in the sidebar while in the trash (removed at the user's request,
+    // 2026-10-06). It existed because the way out used to be the same "Trash"
+    // toggle that led in, which a test user did not recognise as an exit; the
+    // way out is now the Home half of the switch beside it. Alt+Left and the
+    // mouse's Back button still work, and the retention period is the Trash
+    // segment's tooltip.
     listColumn->addWidget(sweepNudge_);
     listColumn->addWidget(view_, 1);
 
@@ -189,7 +273,7 @@ void MainWindow::buildUi()
     // for the width that draws two columns rather than a round number, so the
     // first thing a new user sees is a board and not a single column of notes
     // — which is what §1 says Napkin is not.
-    const int listStartWidth   = 340;
+    const int listStartWidth   = tokens::kSidebarWidth;
     const int canvasStartWidth = canvas_->widthForColumns(2);
     splitter_->setSizes({listStartWidth, canvasStartWidth});
 
@@ -201,20 +285,54 @@ void MainWindow::buildUi()
     auto* central = new QWidget;
     auto* rootLayout = new QVBoxLayout(central);
     rootLayout->setContentsMargins(0, 0, 0, 0);
-    rootLayout->setSpacing(0);
+    rootLayout->setSpacing(tokens::kHeaderGap);
     rootLayout->addWidget(buildHeaderWidget());
-    rootLayout->addWidget(stack_, 1);
+    // The desk's margin on three sides. The right one is the board's own inset
+    // (kPadX), so the board's scroll bar can sit at the window's edge.
+    auto* body = new QVBoxLayout;
+    body->setContentsMargins(tokens::kWindowMargin, 0, 0, tokens::kWindowMargin);
+    body->addWidget(stack_);
+    rootLayout->addLayout(body, 1);
     setCentralWidget(central);
 
-    toast_ = new UndoToast(central);
-    // Once the offer is gone — taken or expired — the blobs it held are free.
-    connect(toast_, &UndoToast::undone, this, [this] { undoProtectedBlobs_.clear(); });
-    connect(toast_, &UndoToast::expired, this, [this] { undoProtectedBlobs_.clear(); });
+    // The search field is as wide as the list it searches, and stays so when
+    // the sidebar is dragged wider or narrower.
+    listSide->widthChanged = [this](int w) { if (search_) search_->setFixedWidth(w); };
 
+    // Each offer holds the blobs its undo would need, until it is taken or
+    // expires; the sweep asks the toast what is still held.
+    toast_ = new UndoToast(central);
+
+
+    // --- reclaiming blobs -----------------------------------------------------
+    // The thumbnail directory is the Thumbnailer's, not paths::thumbsDir().
+    // Those are the same in the application, but a window built over a test's
+    // temporary store swept the REAL profile's thumbnails whenever a test
+    // emptied the trash — every one its own database did not reference.
+    sweeper_ = new BlobSweeper(items_, blobs_, thumbs_.cacheDir(), this);
+    sweeper_->setProtectedHashes([this] { return toast_->protectedHashes(); });
 
     // --- autosave ------------------------------------------------------------
     autosave_ = new Autosave(this);
-    autosave_->setFlushHandler([this] { flushAndReportFailure(); });
+    autosave_->setFlushHandler([this](bool timed) { flushAndReportFailure(timed); });
+
+    saver_ = new BackgroundSaver(db_, this);
+    connect(saver_, &BackgroundSaver::saved, this,
+            [this](BufferId buffer, const std::vector<BackgroundSaver::Entry>& entries,
+                   Timestamp when) {
+                QList<ItemId> clean;
+                for (const auto& e : entries)
+                    if (canvas_->markSavedIfUnchanged(e.id, e.generation, e.text)) clean << e.id;
+                canvas_->acknowledgeSaved(clean, when);
+                model_->invalidatePreview(buffer);
+                saveFailures_ = 0;
+            });
+    connect(saver_, &BackgroundSaver::failed, this, [this](const QString&) {
+        // The cards were never marked clean, so the text is still waiting to be
+        // written; the next attempt picks it up.
+        ++saveFailures_;
+        reportSaveFailure();
+    });
 
     connect(view_, &BufferListView::rowActivated, this, &MainWindow::openRow);
     // A click always opens what was clicked. Selection changes cover most of
@@ -299,6 +417,20 @@ void MainWindow::buildUi()
 
 
     // --- actions --------------------------------------------------------------
+    // Back, as a browser or file manager has it. Enabled only in the trash, so
+    // it never takes Alt+Left from anywhere it might mean something else.
+    leaveTrashAction_ = new QAction(tr("Back to napkins"), this);
+    leaveTrashAction_->setObjectName(QStringLiteral("leaveTrashAction"));
+    leaveTrashAction_->setShortcut(QKeySequence::Back);
+    leaveTrashAction_->setShortcutContext(Qt::WindowShortcut);
+    leaveTrashAction_->setEnabled(false);
+    connect(leaveTrashAction_, &QAction::triggered, this, &MainWindow::goHome);
+    addAction(leaveTrashAction_);
+    // The mouse's Back button, anywhere in the window. Watched at the
+    // application, because the widget under the pointer — the list, a card —
+    // takes the press before the window would see it.
+    qApp->installEventFilter(this);
+
     // An action rather than a bare shortcut: it carries its own label and key
     // hint, so the binding is discoverable and can be surfaced in a menu later
     // without rewiring anything.
@@ -344,8 +476,15 @@ void MainWindow::buildUi()
     connect(view_, &BufferListView::restoreRequested,    this, &MainWindow::restoreRow);
     connect(view_, &BufferListView::contextMenuRequested, this, &MainWindow::showContextMenu);
 
-    if (overflowButton_) overflowButton_->setMenu(buildOverflowMenu());
-    buildMenuBar();
+    buildAppMenu();
+
+    // A reload resets the list and clears its current row without a word —
+    // QItemSelectionModel resets silently — and a deferred re-sort reloads from
+    // inside the model, out of MainWindow's sight. Then Qt's own list view
+    // picks its first row when it next gains focus, which is not the latest.
+    // So every reset is followed, a turn later, by the one rule.
+    connect(model_, &QAbstractItemModel::modelReset, this,
+            [this] { QTimer::singleShot(0, this, &MainWindow::selectLatestIfNone); });
 
     // Relative labels go stale silently, so repaint them on a slow tick.
     timeRefresh_ = new QTimer(this);
@@ -366,7 +505,10 @@ void MainWindow::buildUi()
     // just refuses to *start* there. Clamped to the screen, because a 1162px
     // opening width on a 1024px display is a window with its edge off-screen.
     {
-        const int startWidth  = listStartWidth + canvasStartWidth + splitter_->handleWidth();
+        // The window's own margin too: without it the board opened 16px short
+        // of its second column.
+        const int startWidth  = tokens::kWindowMargin + listStartWidth + canvasStartWidth
+                                + splitter_->handleWidth();
         const int startHeight = 760;
         const QRect avail = QGuiApplication::primaryScreen()
                                 ? QGuiApplication::primaryScreen()->availableGeometry()
@@ -377,198 +519,272 @@ void MainWindow::buildUi()
 
     // A keyboard user arriving with focus on the Trash button and no row
     // selected could press P, K, Delete or Enter and have nothing happen at all.
-    if (model_->rowCount() > 0) view_->setCurrentIndex(model_->index(0, 0));
+    selectLatestIfNone();
     view_->setFocus(Qt::OtherFocusReason);
     updateSweepNudge();
 }
 
+// The header, after the 2026-10-06 mockup: search on the left, as wide as the
+// sidebar it searches; the Home / Trash switch in the middle of the window;
+// New, Settings and the menu as round buttons on the right. No menu bar — the
+// menu button holds every action (buildAppMenu).
 QWidget* MainWindow::buildHeaderWidget()
 {
     auto* header = new QWidget;
-    auto* layout = new QHBoxLayout(header);
-    layout->setContentsMargins(16, 10, 12, 10);
+    auto* grid = new QGridLayout(header);
+    grid->setContentsMargins(tokens::kWindowMargin, tokens::kHeaderTop, tokens::kWindowMargin, 0);
+    grid->setHorizontalSpacing(tokens::kWindowMargin);
+    // Equal outer columns keep the switch centred on the window, whatever the
+    // search field and the buttons happen to measure.
+    grid->setColumnStretch(0, 1);
+    grid->setColumnStretch(2, 1);
 
-    // No wordmark: the window title already says Napkin, and §7 asks for
-    // content to dominate. The header carries actions, not branding.
-
-    // Phase 5 puts the search field here, between the name and the trash
-    // toggle — the placement adopted from the §7 mockup review.
-    auto* trashButton = new QPushButton(tr("Trash"));
-    trashButton->setAccessibleName(tr("Show trash"));
-    trashButton->setToolTip(tr("Show deleted napkins and items"));
-    trashButton->setFlat(true);
-    trashButton->setCheckable(true);
-    trashButton->setCursor(Qt::PointingHandCursor);
-    trashButton->setObjectName(QStringLiteral("trashToggle"));
     search_ = new QLineEdit;
-    search_->setPlaceholderText(tr("Search"));
+    search_->setPlaceholderText(tr("Search through napkins"));
     search_->setClearButtonEnabled(true);
     search_->setObjectName(QStringLiteral("searchField"));
+    search_->setProperty(NapkinStyle::kShapeProperty, QStringLiteral("pill"));
+    search_->setFixedHeight(tokens::kHeaderControlH);
+    search_->setFixedWidth(tokens::kSidebarWidth);
+    search_->setTextMargins(4, 0, 8, 0);
+    searchGlyph_ = search_->addAction(QIcon(), QLineEdit::LeadingPosition);
+    // The magnifier is drawn as a button, so it has to say what it is; pressing
+    // it puts the caret in the field, which is what a click there means.
+    searchGlyph_->setText(tr("Search"));
+    // The action's associated objects include the field itself, not only the
+    // glyph's button: taking focus away from all of them made the search field
+    // unclickable — only Ctrl+F, which sets focus directly, could reach it.
+    for (QObject* o : searchGlyph_->associatedObjects())
+        if (auto* b = qobject_cast<QAbstractButton*>(o)) {
+            b->setAccessibleName(tr("Search"));
+            b->setFocusPolicy(Qt::NoFocus);
+        }
+    connect(searchGlyph_, &QAction::triggered, this,
+            [this] { search_->setFocus(Qt::MouseFocusReason); });
     search_->installEventFilter(this);   // Ctrl+V here; see eventFilter
     search_->setAccessibleName(tr("Search your napkins"));
     search_->setToolTip(tr("Search your napkins (Ctrl+F)\n"
                            "Ctrl+V pastes onto the napkin; Ctrl+Shift+V pastes here."));
-    search_->setMaximumWidth(280);
-    // Over the pane it filters, which is the only place it means anything.
-    layout->addWidget(search_);
-    layout->addStretch();
+    grid->addWidget(search_, 0, 0, Qt::AlignLeft | Qt::AlignVCenter);
 
-    // SPEC §16 justified using QAction over QShortcut because an action
-    // "carries its own label and key hint" — but they were attached to no menu
-    // and no button, so they were invisible shortcuts wearing a label. This
-    // collects that payoff: every binding is now readable somewhere.
-    auto* newButton = new QPushButton(tr("New"));   // the plus is an icon now
-    newButton->setFlat(true);
-    newButton->setCursor(Qt::PointingHandCursor);
-    newButton->setObjectName(QStringLiteral("newButton"));
-    newButton->setToolTip(tr("New napkin (Ctrl+N)"));
-    newButton->setAccessibleName(tr("New napkin"));
-    connect(newButton, &QPushButton::clicked, this, &MainWindow::newDraft);
-    layout->addWidget(newButton);
-    newButton_ = newButton;
+    // Home and Trash are two places, so they are two segments of one switch:
+    // the way out of the trash is the other half of the way in. The old single
+    // "Trash" toggle had to be noticed as pressed before it read as a way back.
+    auto* track = new SwitchTrack;
+    track->setObjectName(QStringLiteral("placeSwitch"));
+    auto* trackRow = new QHBoxLayout(track);
+    trackRow->setContentsMargins(0, 0, 0, 0);
+    trackRow->setSpacing(0);
+    auto segment = [](const QString& label, const QString& name) {
+        auto* b = new QPushButton(label);
+        b->setObjectName(name);
+        b->setProperty(NapkinStyle::kShapeProperty, QStringLiteral("segment"));
+        b->setCheckable(true);
+        b->setFlat(true);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFixedSize(94, tokens::kHeaderControlH);
+        return b;
+    };
+    homeSegment_ = segment(tr("Home"), QStringLiteral("homeSegment"));
+    homeSegment_->setChecked(true);
+    homeSegment_->setToolTip(tr("Your napkins (Ctrl+Home)"));
+    homeSegment_->setAccessibleName(tr("Show your napkins"));
+    auto* trashButton = segment(tr("Trash"), QStringLiteral("trashToggle"));
+    trashButton->setAccessibleName(tr("Show trash"));
+    trashButton->setToolTip(tr("Deleted napkins and items stay here for %1 days.")
+                                .arg(BufferService::trashRetentionDays()));
+    trackRow->addWidget(homeSegment_);
+    trackRow->addWidget(trashButton);
+    grid->addWidget(track, 0, 1, Qt::AlignCenter);
 
-    auto* menuButton = new QToolButton;
-    // A drawn three-dot glyph rather than the "⋯" character: the character
-    // came with Breeze's own drop-down arrow beside it, two symbols for one
-    // idea. The icon is set, and re-set on theme changes, in styleToolbarIcons().
-    menuButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    menuButton->setStyleSheet(QStringLiteral("QToolButton::menu-indicator { image: none; width: 0px; }"));
-    menuButton->setAutoRaise(true);
-    menuButton->setPopupMode(QToolButton::InstantPopup);
-    menuButton->setObjectName(QStringLiteral("overflowButton"));
-    menuButton->setToolTip(tr("More actions"));
-    menuButton->setAccessibleName(tr("More actions"));
-    // Populated later: buildHeaderWidget runs before the actions are created,
-    // so building the menu here iterated an empty action list and shipped a
-    // menu containing nothing but "Keyboard shortcuts…".
-    overflowButton_ = menuButton;
-    layout->addWidget(menuButton);
+    // One place at a time, and pressing the place you are in keeps you there.
+    // Free checkable buttons let a second click on "Trash" un-press it and
+    // leave the trash (independent review, 2026-10-06).
+    auto* places = new QButtonGroup(track);
+    places->setExclusive(true);
+    places->addButton(homeSegment_);
+    places->addButton(trashButton);
+
+    trashToggle_ = trashButton;
+    connect(trashButton, &QPushButton::toggled, this, [this](bool on) { showTrash(on); });
+
+    auto* right = new QWidget;
+    auto* rightRow = new QHBoxLayout(right);
+    rightRow->setContentsMargins(0, 0, 0, 0);
+    rightRow->setSpacing(tokens::kWindowMargin);
 
     emptyTrashButton_ = new QPushButton(tr("Empty trash…"));   // it asks first, as the menu item does
     emptyTrashButton_->setFlat(true);
+    emptyTrashButton_->setProperty(NapkinStyle::kShapeProperty, QStringLiteral("pill"));
+    emptyTrashButton_->setFixedHeight(tokens::kHeaderControlH);
     emptyTrashButton_->setCursor(Qt::PointingHandCursor);
     emptyTrashButton_->setObjectName(QStringLiteral("emptyTrashButton"));
     emptyTrashButton_->hide();   // only meaningful while looking at the trash
     connect(emptyTrashButton_, &QPushButton::clicked, this, &MainWindow::emptyTrash);
-    layout->addWidget(emptyTrashButton_);
+    rightRow->addWidget(emptyTrashButton_);
 
-    trashToggle_ = trashButton;
-    connect(trashButton, &QPushButton::toggled, this, [this](bool on) {
-        if (showTrashAction_) showTrashAction_->setChecked(on);
-        showTrash(on);
-    });
-    layout->addWidget(trashButton);
+    newButton_ = roundButton(QStringLiteral("newButton"), tr("New napkin (Ctrl+N)"));
+    newButton_->setAccessibleName(tr("New napkin"));
+    connect(newButton_, &QToolButton::clicked, this, &MainWindow::newDraft);
+    rightRow->addWidget(newButton_);
 
     // Settings in one click. It lived only in the menu bar, which Global Menu
     // (Plasma) moves out of the window altogether.
-    auto* settingsButton = new QToolButton;
-    settingsButton->setObjectName(QStringLiteral("settingsButton"));
-    settingsButton->setAutoRaise(true);
-    settingsButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    settingsButton->setCursor(Qt::PointingHandCursor);
-    settingsButton->setToolTip(tr("Settings"));
-    settingsButton->setAccessibleName(tr("Settings"));
-    connect(settingsButton, &QToolButton::clicked, this, &MainWindow::openSettings);
-    layout->addWidget(settingsButton);
-    settingsButton_ = settingsButton;
+    settingsButton_ = roundButton(QStringLiteral("settingsButton"), tr("Settings"));
+    connect(settingsButton_, &QToolButton::clicked, this, &MainWindow::openSettings);
+    rightRow->addWidget(settingsButton_);
 
+    // Every action, behind one button. Populated in buildAppMenu(), once the
+    // actions exist.
+    overflowButton_ = roundButton(QStringLiteral("overflowButton"), tr("Menu (F10)"));
+    overflowButton_->setAccessibleName(tr("Menu"));
+    overflowButton_->setPopupMode(QToolButton::InstantPopup);
+    rightRow->addWidget(overflowButton_);
+
+    grid->addWidget(right, 0, 2, Qt::AlignRight | Qt::AlignVCenter);
+    sizeHeaderControls();
     return header;
 }
 
-// The menu bar carries every action the application has, which is the one place
-// a user can go to find out what it can do. The header buttons and the key
-// chords are shortcuts to these, not a separate set.
-void MainWindow::buildMenuBar()
+// Every action the application has, in one menu behind the header's menu
+// button — the one place a user can go to find out what it can do. The header
+// buttons and the key chords are shortcuts to these, not a separate set.
+//
+// It replaced the menu bar (2026-10-06 mockup). Sections stand in for the old
+// File / Napkins / Trash / Help menus, so nothing moved further than one menu
+// away. Every action with a shortcut is also the window's own action, so the
+// chord works whether or not the menu has ever been opened. F10 opens it.
+void MainWindow::buildAppMenu()
 {
-    auto* bar = menuBar();
-    styleMenuBar();
     styleToolbarIcons();
     auto named = [this](const char* name) -> QAction* {
         return findChild<QAction*>(QString::fromLatin1(name));
     };
+    auto* menu = new QMenu(this);
+    menu->setObjectName(QStringLiteral("appMenu"));
+    menu->setToolTipsVisible(true);
+    appMenu_ = menu;
+    // Bound to the window as well, so the chord is live without the menu.
+    auto bind = [this](QAction* a) { if (!a->shortcut().isEmpty()) addAction(a); };
 
-    auto* file = bar->addMenu(tr("&File"));
-    file->addAction(named("newBufferAction"));
-    file->addAction(named("addTextAction"));
-    file->addAction(named("addImageAction"));
-    file->addSeparator();
-    file->addAction(named("pasteAction"));
-    file->addSeparator();
-    exportBufferAction_ = file->addAction(tr("Export this napkin…"));
-    connect(exportBufferAction_, &QAction::triggered, this, &MainWindow::exportCurrentBuffer);
-    auto* exportAll = file->addAction(tr("Export everything…"));
-    connect(exportAll, &QAction::triggered, this, &MainWindow::exportEverything);
-    file->addSeparator();
-    // Settings lives here and is called what its dialog is called. It used to
-    // be "Settings ▸ Preferences…", opening a dialog titled "Settings", with
-    // Keyboard shortcuts and About beside it instead of under Help.
-    auto* prefs = file->addAction(tr("Settings…"));
-    prefs->setShortcut(QKeySequence::Preferences);
-    connect(prefs, &QAction::triggered, this, &MainWindow::openSettings);
-    file->addSeparator();
-    auto* quit = file->addAction(tr("&Quit"));
-    quit->setShortcut(QKeySequence::Quit);
-    connect(quit, &QAction::triggered, this, [this] { quitNapkin(); });
+    menu->addAction(named("newBufferAction"));
+    menu->addAction(named("addTextAction"));
+    menu->addAction(named("addImageAction"));
+    menu->addAction(named("pasteAction"));
 
-    // "Napkins", not "Home": the menu holds the napkin list's own actions, and
-    // "All napkins" is what the trash's "Back to your napkins" returns to.
-    auto* home = bar->addMenu(tr("&Napkins"));
+    menu->addSection(tr("Napkins"));
     // Ctrl+Z takes back the last delete, clean-up or cut — whatever the toast
     // is offering. A caret in a note or the search box keeps Ctrl+Z for its own
     // text: Qt gives the focused editor first refusal on the shortcut.
-    auto* undo = home->addAction(tr("Undo"));
+    auto* undo = menu->addAction(tr("Undo"));
     undo->setObjectName(QStringLiteral("undoAction"));
     undo->setShortcut(QKeySequence::Undo);
+    bind(undo);
     connect(undo, &QAction::triggered, this, [this] { toast_->undoNow(); });
     // Greyed out only while the menu is open: a disabled action's shortcut does
     // not fire, so leaving it disabled would kill Ctrl+Z until the next visit.
-    connect(home, &QMenu::aboutToShow, this, [this, undo] { undo->setEnabled(toast_->hasOffer()); });
-    connect(home, &QMenu::aboutToHide, undo, [undo] { undo->setEnabled(true); });
-    home->addSeparator();
-    auto* pin = home->addAction(tr("Pin or unpin"));
+    connect(menu, &QMenu::aboutToShow, this, [this, undo] { undo->setEnabled(toast_->hasOffer()); });
+    connect(menu, &QMenu::aboutToHide, undo, [undo] { undo->setEnabled(true); });
+    auto* pin = menu->addAction(tr("Pin or unpin"));
     pin->setObjectName(QStringLiteral("pinAction"));
     pin->setShortcut(QKeySequence(QStringLiteral("Ctrl+P")));   // Napkin prints nothing
     pin->setToolTip(tr("Pinned napkins stay at the top of the list."));
+    bind(pin);
     connect(pin, &QAction::triggered, this, [this] { togglePin(view_->currentIndex().row()); });
-    auto* keep = home->addAction(tr("Keep or release"));
+    auto* keep = menu->addAction(tr("Keep or release"));
     keep->setObjectName(QStringLiteral("keepAction"));
     keep->setShortcut(QKeySequence(QStringLiteral("Ctrl+D")));  // the "bookmark" key, like Keep's glyph
     keep->setToolTip(tr("Clean up never moves a kept napkin to the trash."));
+    bind(keep);
     connect(keep, &QAction::triggered, this, [this] { toggleKeep(view_->currentIndex().row()); });
-    home->setToolTipsVisible(true);
-    home->addSeparator();
-    auto* showAll = home->addAction(tr("All napkins"));
+    auto* rename = menu->addAction(tr("Rename…"));
+    rename->setObjectName(QStringLiteral("renameAction"));
+    rename->setShortcut(QKeySequence(Qt::Key_F2));
+    rename->setToolTip(tr("Give this napkin a name of its own. Leave it empty to title it "
+                          "from its first note again."));
+    bind(rename);
+    connect(rename, &QAction::triggered, this, [this] { renameRow(view_->currentIndex().row()); });
+    auto* showAll = menu->addAction(tr("All napkins"));
+    showAll->setObjectName(QStringLiteral("homeAction"));
     showAll->setShortcut(QKeySequence(QStringLiteral("Ctrl+Home")));
+    bind(showAll);
     connect(showAll, &QAction::triggered, this, &MainWindow::goHome);
-    home->addAction(named("findAction"));
-    home->addSeparator();
-    auto* cleanUp = home->addAction(tr("Clean up…"));
+    menu->addAction(named("findAction"));
+    auto* cleanUp = menu->addAction(tr("Clean up…"));
     connect(cleanUp, &QAction::triggered, this, &MainWindow::reviewSweep);
 
-    auto* trash = bar->addMenu(tr("&Trash"));
-    showTrashAction_ = trash->addAction(tr("Show trash"));
-    showTrashAction_->setCheckable(true);
-    connect(showTrashAction_, &QAction::toggled, this, [this](bool on) {
-        if (trashToggle_) trashToggle_->setChecked(on);
-        else              showTrash(on);
+    menu->addSection(tr("Trash"));
+    // A plain command, not a checkbox: the switch in the header already says
+    // where you are, and a check gutter pushed every item in the menu sideways.
+    showTrashAction_ = menu->addAction(tr("Show trash"));
+    connect(showTrashAction_, &QAction::triggered, this, [this] {
+        if (trashToggle_) trashToggle_->setChecked(true);
+        else              showTrash(true);
     });
-    auto* restore = trash->addAction(tr("Restore selected"));
+    auto* restore = menu->addAction(tr("Restore selected"));
     connect(restore, &QAction::triggered, this,
             [this] { restoreRow(view_->currentIndex().row()); });
-    trash->addSeparator();
-    auto* empty = trash->addAction(tr("Empty trash…"));
+    auto* empty = menu->addAction(tr("Empty trash…"));
     connect(empty, &QAction::triggered, this, &MainWindow::emptyTrash);
-    connect(trash, &QMenu::aboutToShow, this, [this, restore, empty] {
+    connect(menu, &QMenu::aboutToShow, this, [this, restore, empty] {
         const bool inTrash = model_->mode() == BufferListModel::Mode::Trash;
         restore->setEnabled(inTrash && view_->currentIndex().isValid());
         empty->setEnabled(buffers_.countTrash() > 0);
     });
 
-    auto* help = bar->addMenu(tr("&Help"));
-    auto* shortcuts = help->addAction(tr("Keyboard shortcuts…"));
+    menu->addSeparator();
+    exportBufferAction_ = menu->addAction(tr("Export this napkin…"));
+    connect(exportBufferAction_, &QAction::triggered, this, &MainWindow::exportCurrentBuffer);
+    auto* exportAll = menu->addAction(tr("Export everything…"));
+    connect(exportAll, &QAction::triggered, this, &MainWindow::exportEverything);
+    // Settings is called what its dialog is called.
+    auto* prefs = menu->addAction(tr("Settings…"));
+    prefs->setShortcut(QKeySequence::Preferences);
+    bind(prefs);
+    connect(prefs, &QAction::triggered, this, &MainWindow::openSettings);
+    // The theme, one step from anywhere: switching light and dark is the
+    // setting people change most, and it should not need a dialog and a Save.
+    auto* themeMenu = menu->addMenu(tr("Theme"));
+    themeMenu->setObjectName(QStringLiteral("themeMenu"));
+    auto* themes = new QActionGroup(themeMenu);
+    themes->setExclusive(true);
+    const std::pair<SettingsDialog::Theme, QString> choices[] = {
+        {SettingsDialog::Theme::System, tr("Follow the system")},
+        {SettingsDialog::Theme::Light,  tr("Light")},
+        {SettingsDialog::Theme::Dark,   tr("Dark")},
+    };
+    for (const auto& [theme, label] : choices) {
+        auto* a = themeMenu->addAction(label);
+        a->setCheckable(true);
+        a->setData(int(theme));
+        themes->addAction(a);
+        connect(a, &QAction::triggered, this, [theme] { SettingsDialog::setTheme(theme); });
+    }
+    // Read when shown, so a change made in Settings is what the menu says.
+    connect(themeMenu, &QMenu::aboutToShow, themeMenu, [themes] {
+        for (QAction* a : themes->actions())
+            a->setChecked(a->data().toInt() == int(SettingsDialog::theme()));
+    });
+    // F11, as in browsers and most desktop apps; Ctrl+Meta+F on macOS, which
+    // is what QKeySequence::FullScreen means there. Checked while it is on, and
+    // kept in step if the window manager changes it (changeEvent).
+    fullScreenAction_ = menu->addAction(tr("Full screen"));
+    fullScreenAction_->setObjectName(QStringLiteral("fullScreenAction"));
+    fullScreenAction_->setCheckable(true);
+    // The platform's own binding, plus F11 where that is not already it — once:
+    // the same chord twice on one action makes Qt call it ambiguous and fire neither.
+    QList<QKeySequence> fullScreenKeys = QKeySequence::keyBindings(QKeySequence::FullScreen);
+    if (!fullScreenKeys.contains(QKeySequence(Qt::Key_F11))) fullScreenKeys.prepend(QKeySequence(Qt::Key_F11));
+    fullScreenAction_->setShortcuts(fullScreenKeys);
+    fullScreenAction_->setShortcutContext(Qt::WindowShortcut);
+    addAction(fullScreenAction_);
+    connect(fullScreenAction_, &QAction::triggered, this, &MainWindow::setFullScreen);
+    auto* tour = menu->addAction(tr("Welcome tour"));
+    tour->setObjectName(QStringLiteral("tourAction"));
+    connect(tour, &QAction::triggered, this, &MainWindow::showTour);
+    auto* shortcuts = menu->addAction(tr("Keyboard shortcuts…"));
     connect(shortcuts, &QAction::triggered, this, &MainWindow::showShortcuts);
-    help->addSeparator();
-    auto* about = help->addAction(tr("About Napkin"));
+    auto* about = menu->addAction(tr("About Napkin"));
     connect(about, &QAction::triggered, this, [this] {
         QMessageBox::about(this, tr("About Napkin"),
             tr("<b>Napkin</b> %1<br>A persistent scratch surface for your computer."
@@ -576,6 +792,22 @@ void MainWindow::buildMenuBar()
                "<br><br>Everything stays on this machine. Napkin makes no network "
                "requests.").arg(QCoreApplication::applicationVersion().toHtmlEscaped()));
     });
+    menu->addSeparator();
+    auto* quit = menu->addAction(tr("Quit"));
+    quit->setShortcut(QKeySequence::Quit);
+    bind(quit);
+    connect(quit, &QAction::triggered, this, [this] { quitNapkin(); });
+
+    overflowButton_->setMenu(menu);
+
+    // The keyboard's way in, where a menu bar's Alt used to be: F10 is the key
+    // GNOME and KDE both use for an application's menu.
+    auto* openMenu = new QAction(tr("Open the menu"), this);
+    openMenu->setObjectName(QStringLiteral("openMenuAction"));
+    openMenu->setShortcut(QKeySequence(Qt::Key_F10));
+    openMenu->setShortcutContext(Qt::WindowShortcut);
+    connect(openMenu, &QAction::triggered, overflowButton_, &QToolButton::showMenu);
+    addAction(openMenu);
 }
 
 // One gesture back to the ordinary view from wherever you are: out of the
@@ -589,8 +821,7 @@ void MainWindow::goHome()
     searchDebounce_->stop();
     model_->setQuery(QString());
     showTrash(false);
-    if (trashToggle_) trashToggle_->setChecked(false);
-    if (showTrashAction_) showTrashAction_->setChecked(false);
+    if (homeSegment_) homeSegment_->setChecked(true);   // the group unpresses Trash
     if (model_->rowCount() > 0) view_->setCurrentIndex(model_->index(0, 0));
     // currentRowChanged does not fire when the row is unchanged, and showTrash
     // above blanked the board — which left a napkin highlighted in the list
@@ -683,21 +914,15 @@ void MainWindow::openSettings()
         model_->reload();
         updateSweepNudge();
         applyTraySetting();
+        applyShortcutSetting();
     });
     dialog.exec();
 }
 
-QMenu* MainWindow::buildOverflowMenu()
+void MainWindow::showTour()
 {
-    auto* menu = new QMenu(this);
-    for (QAction* action : actions()) menu->addAction(action);
-    menu->addSeparator();
-    auto* cleanUp = menu->addAction(tr("Clean up…"));
-    connect(cleanUp, &QAction::triggered, this, &MainWindow::reviewSweep);
-    menu->addSeparator();
-    auto* help = menu->addAction(tr("Keyboard shortcuts…"));
-    connect(help, &QAction::triggered, this, &MainWindow::showShortcuts);
-    return menu;
+    TourDialog tour(this);
+    tour.exec();
 }
 
 void MainWindow::showShortcuts()
@@ -713,6 +938,7 @@ void MainWindow::showShortcuts()
            "<tr><td><b>Ctrl+Shift+I</b></td><td>Add an image from a file</td></tr>"
            "<tr><td><b>Ctrl+P</b></td><td>Pin this napkin — it stays at the top</td></tr>"
            "<tr><td><b>Ctrl+D</b></td><td>Keep this napkin — Clean up never moves it to the trash</td></tr>"
+           "<tr><td><b>F2</b></td><td>Rename this napkin (optional)</td></tr>"
            "<tr><td><b>Ctrl+Z</b></td><td>Undo the last delete, pin or keep</td></tr>"
            "<tr><td colspan='2'>&nbsp;</td></tr>"
            "<tr><td colspan='2'><i>On the napkin:</i></td></tr>"
@@ -745,12 +971,26 @@ void MainWindow::undoLastTrashForTest(BufferId id, bool wasKept, Timestamp modif
     reloadPreservingSelection();
 }
 
-void MainWindow::emptyTrashForTest()
+// The same path the menu takes once the user has confirmed, so a test drives
+// what ships rather than a look-alike that skipped the sweep.
+void MainWindow::emptyTrashForTest() { emptyTrashConfirmed(); }
+
+void MainWindow::sweepBlobs() { sweeper_->start(); }
+
+QSet<QString> MainWindow::undoProtectedBlobsForTest() const { return toast_->protectedHashes(); }
+
+QString MainWindow::napkinName(BufferId id) const
 {
-    editingBuffer_ = kNoBuffer;
-    canvas_->showNothingSelected();
-    service_.emptyTrash();
-    reloadPreservingSelection();
+    if (id == kNoBuffer) return tr("a new napkin");
+    const auto counts = items_.countsForBuffer(id);
+    const auto buffer = buffers_.find(id);
+    QString title = derivePreview(items_.previewHead(id), counts.total, counts.images, {},
+                                  buffer ? buffer->name : QString()).primary;
+    title = title.simplified();
+    // Short enough that the toast stays a line; the name is a reminder, not
+    // the content.
+    if (title.size() > 32) title = title.left(31).trimmed() + QStringLiteral("…");
+    return title.isEmpty() ? tr("Untitled") : title;
 }
 
 void MainWindow::restoreRow(int row)
@@ -773,11 +1013,9 @@ void MainWindow::restoreRow(int row)
 
     // Restore used to happen in silence; now it says where things went.
     if (target != id) {
-        const auto counts = items_.countsForBuffer(target);
-        const QString title = derivePreview(items_.previewHead(target), counts.total, counts.images).primary;
-        toast_->inform(tr("Restored to “%1”").arg(title.left(40)));
+        toast_->inform(tr("Restored to “%1”").arg(napkinName(target)));
     } else {
-        toast_->offer(tr("Napkin restored"), [this, id] {
+        toast_->offer(tr("“%1” restored").arg(napkinName(id)), [this, id] {
             guarded(tr("Could not undo that"), [&] { if (!service_.trash(id)) service_.trashConfirmed(id); });
             reloadPreservingSelection();
             updateEmptyTrashButton();
@@ -872,6 +1110,11 @@ void MainWindow::showTrash(bool trash)
     toast_->dismiss();
     model_->setMode(trash ? BufferListModel::Mode::Trash : BufferListModel::Mode::Live);
     updateEmptyTrashButton();
+    // Read each time: the retention is a setting.
+    if (trashToggle_)
+        trashToggle_->setToolTip(tr("Deleted napkins and items stay here for %1 days.")
+                                     .arg(BufferService::trashRetentionDays()));
+    if (leaveTrashAction_) leaveTrashAction_->setEnabled(trash);
     // Switching modes leaves nothing selected, so the board must stop showing
     // the buffer that was selected in the other one. It did not: entering the
     // trash kept the previous live buffer's cards on screen, and a mode next to
@@ -888,6 +1131,31 @@ void MainWindow::showTrash(bool trash)
     editingBuffer_ = kNoBuffer;
     updateEmptyState();
     updateSweepNudge();
+    selectLatestIfNone();   // the trash opens on what was deleted last, not on a blank board
+}
+
+// "Select a napkin to see what is on it" is a screen with nothing to do on
+// it, and the user asked never to land there. Whenever the list has napkins
+// and none is open, open the latest: the most recently changed one, or in the
+// trash the most recently deleted (the trash lists those first). A draft
+// being written counts as open.
+void MainWindow::selectLatestIfNone()
+{
+    if (model_->rowCount() == 0 || model_->hasDraft()) return;
+    const int current = view_->currentIndex().row();
+    if (current >= 0 && editingBuffer_ != kNoBuffer && canvas_->showingANapkin()) return;
+
+    int latest = 0;
+    if (model_->mode() == BufferListModel::Mode::Live && !model_->isSearching()) {
+        qint64 newest = std::numeric_limits<qint64>::min();
+        for (int row = 0; row < model_->rowCount(); ++row) {
+            const qint64 at = model_->index(row, 0).data(BufferListModel::ModifiedAtRole).toLongLong();
+            if (at > newest) { newest = at; latest = row; }
+        }
+    }
+    // currentRowChanged does not fire for the row that is already current.
+    if (current == latest) selectBuffer(latest);
+    else                   view_->setCurrentIndex(model_->index(latest, 0));
 }
 
 void MainWindow::reloadPreservingSelection()
@@ -904,6 +1172,7 @@ void MainWindow::reloadPreservingSelection()
     if (const int row = model_->rowForId(current); row >= 0)
         view_->setCurrentIndex(model_->index(row, 0));
     updateEmptyState();
+    selectLatestIfNone();   // the napkin that was open is gone: show the latest
 }
 
 void MainWindow::togglePin(int row)
@@ -914,15 +1183,65 @@ void MainWindow::togglePin(int row)
     const auto buffer = buffers_.find(id);
     if (!buffer) return;
     const bool was = buffer->pinned;
+    const QString name = napkinName(id);
     if (!guarded(tr("Could not pin that napkin"),
                  [&] { service_.setPinned(id, !was); }))
         return;
     reloadPreservingSelection();   // pinning moves the card; that is the point
     // Never silent: a pin changed by a stray key must be seen, and undoable.
-    toast_->offer(was ? tr("Unpinned") : tr("Pinned — it stays at the top"), [this, id, was] {
+    toast_->offer(was ? tr("Unpinned “%1”").arg(name)
+                      : tr("Pinned “%1” — it stays at the top").arg(name), [this, id, was] {
         guarded(tr("Could not undo that"), [&] { service_.setPinned(id, was); });
         reloadPreservingSelection();
     });
+}
+
+void MainWindow::renameRow(int row)
+{
+    const BufferId id = model_->idAt(row);
+    if (id == kNoBuffer || model_->mode() != BufferListModel::Mode::Live) return;
+    const auto buffer = buffers_.find(id);
+    if (!buffer) return;
+
+    // The placeholder is the title it has without a name, so clearing the
+    // field visibly means "back to that" rather than "no title at all".
+    const auto counts = items_.countsForBuffer(id);
+    const QString automatic =
+        derivePreview(items_.previewHead(id), counts.total, counts.images).primary;
+
+    QInputDialog dialog(this);
+    dialog.setWindowTitle(tr("Rename napkin"));
+    dialog.setLabelText(tr("Name — leave empty to title it from what is on it:"));
+    dialog.setTextValue(buffer->name);
+    dialog.setOkButtonText(tr("Rename"));   // says what it does, as every Napkin button does
+    if (auto* field = dialog.findChild<QLineEdit*>()) {
+        field->setPlaceholderText(automatic);
+        field->setMaxLength(BufferRepository::kMaxNameLength);
+        // QInputDialog sizes itself to its field, so the room goes there: a
+        // title of a few words was clipped in a 300px box.
+        field->setMinimumWidth(360);
+        field->selectAll();
+    }
+    if (dialog.exec() != QDialog::Accepted) return;
+    renameNapkin(id, dialog.textValue());
+}
+
+void MainWindow::renameNapkin(BufferId id, const QString& name)
+{
+    const auto buffer = buffers_.find(id);
+    if (!buffer) return;
+    const QString was = buffer->name;
+    if (name.simplified() == was) return;
+    if (!guarded(tr("Could not rename that napkin"), [&] { buffers_.setName(id, name); }))
+        return;
+    model_->invalidatePreview(id);
+    const QString now = napkinName(id);
+    toast_->offer(name.simplified().isEmpty() ? tr("“%1” is titled from what is on it again").arg(now)
+                                              : tr("Renamed “%1”").arg(now),
+                  [this, id, was] {
+                      guarded(tr("Could not undo that"), [&] { buffers_.setName(id, was); });
+                      model_->invalidatePreview(id);
+                  });
 }
 
 void MainWindow::toggleKeep(int row)
@@ -933,11 +1252,13 @@ void MainWindow::toggleKeep(int row)
     const auto buffer = buffers_.find(id);
     if (!buffer) return;
     const bool was = buffer->kept;
+    const QString name = napkinName(id);
     if (!guarded(tr("Could not change that napkin"),
                  [&] { service_.setKept(id, !was); }))
         return;
     model_->refreshRow(id);        // keeping changes nothing about placement
-    toast_->offer(was ? tr("No longer kept") : tr("Kept — Clean up will leave it alone"),
+    toast_->offer(was ? tr("“%1” is no longer kept").arg(name)
+                      : tr("Kept “%1” — Clean up will leave it alone").arg(name),
                   [this, id, was] {
         guarded(tr("Could not undo that"), [&] { service_.setKept(id, was); });
         model_->refreshRow(id);
@@ -966,14 +1287,15 @@ void MainWindow::trashRow(int row)
 
         if (!guarded(tr("Could not delete that napkin"), [&] {
                 buffers_.hardDeleteEvenIfKept(id);
-                reconcileBlobs(items_, blobs_, paths::thumbsDir(), undoProtectedBlobs_);
             }))
             return;
+        sweeper_->start();   // reclaim its blobs and thumbnails, off the UI thread
         reloadPreservingSelection();
         updateEmptyTrashButton();
         return;
     }
 
+    const QString name = napkinName(id);
     // The repository refuses a kept buffer outright, so the confirmation cannot
     // be skipped by a UI path that forgets to ask (SPEC.md §6).
     if (const auto before = buffers_.find(id))
@@ -1006,7 +1328,7 @@ void MainWindow::trashRow(int row)
     // put it back — otherwise the user recovers a buffer that quietly lost the
     // protection they asked for, and the next sweep offers it up.
     const auto state = lastTrashed_;
-    toast_->offer(tr("Napkin moved to trash"), [this, state] {
+    toast_->offer(tr("“%1” moved to trash").arg(name), [this, state] {
         if (!guarded(tr("Could not undo that"), [&] {
                 service_.restore(state.id);
                 if (state.kept) service_.setKept(state.id, true);
@@ -1041,6 +1363,7 @@ void MainWindow::showContextMenu(int row, const QPoint& globalPos)
                                     this, [this, row] { toggleKeep(row); });
         keep->setToolTip(tr("Clean up never moves a kept napkin to the trash. "
                             "It stays until you delete it yourself."));
+        menu.addAction(tr("Rename…\tF2"), this, [this, row] { renameRow(row); });
         menu.addSeparator();
         menu.addAction(tr("Delete\tDel"), this, [this, row] { trashRow(row); });
     }
@@ -1064,7 +1387,7 @@ void MainWindow::updateEmptyState()
     }
     if (model_->mode() == BufferListModel::Mode::Trash) {
         emptyState_->setContent(QStringLiteral(":/resources/icons/trash-empty-256.png"),
-                          tr("The trash is empty"),
+                          tr("The trash can is empty"),
                           tr("Deleted napkins and items stay here for %1 days.")
                               .arg(BufferService::trashRetentionDays()),
                           tr("Back to your napkins"));
@@ -1124,6 +1447,7 @@ bool MainWindow::addImageToCurrent(const QByteArray& bytes, const QString& mime,
         return false;
     }
 
+    bool appended = false;
     try {
         // The blob is already fsynced and renamed into place, so committing the
         // row now can only ever leave an orphan, never a dangling reference.
@@ -1149,6 +1473,7 @@ bool MainWindow::addImageToCurrent(const QByteArray& bytes, const QString& mime,
                 service_.appendTo(editingBuffer_,
                     Item::makeImage(stored.hash, stored.size.width(), stored.size.height(),
                                     stored.byteSize, sourceName, stored.mime, stored.animated));
+                appended = true;
             }
             canvas_->setItems(items_.listForBuffer(editingBuffer_));
             model_->invalidatePreview(editingBuffer_);
@@ -1160,6 +1485,11 @@ bool MainWindow::addImageToCurrent(const QByteArray& bytes, const QString& mime,
         return false;
     }
 
+    // A napkin you just added to is the most recent one, so it moves to the
+    // top of RECENT now. invalidatePreview() refreshed its time but not its
+    // place, and nothing else would re-sort the list until some unrelated
+    // change did.
+    if (appended) reloadPreservingSelection();
     updateEmptyState();
     return true;
 }
@@ -1175,7 +1505,9 @@ void MainWindow::completePendingCut()
     if (!held || !held->inTrash()) return;                            // undone, or restored
     guarded(tr("Could not tidy up after the cut"),
             [&] { buffers_.hardDeleteEvenIfKept(cut.holder); });
-    toast_->dismiss();   // its Undo would put back what has just been pasted
+    // Its Undo would put back what has just been pasted. Only its own: the
+    // offers behind it are about other things and stay undoable.
+    toast_->withdraw(cut.offer);
     updateEmptyTrashButton();
 }
 
@@ -1185,8 +1517,7 @@ void MainWindow::pasteFromClipboard()
     // Ctrl+N there does: leave the trash, then paste into a new napkin.
     if (model_->mode() != BufferListModel::Mode::Live) {
         showTrash(false);
-        if (trashToggle_) trashToggle_->setChecked(false);
-        if (showTrashAction_) showTrashAction_->setChecked(false);
+        if (homeSegment_) homeSegment_->setChecked(true);
     }
 
     const auto content = readClipboard(QApplication::clipboard()->mimeData());
@@ -1274,8 +1605,8 @@ bool MainWindow::appendTextBlock(const QString& text)
         return false;
     }
 
-    bool stored = false;
-    const bool ok = guarded(tr("Could not add that text"), [this, &text, &stored] {
+    bool stored = false, appended = false;
+    const bool ok = guarded(tr("Could not add that text"), [this, &text, &stored, &appended] {
         if (editingBuffer_ == kNoBuffer) {
             if (text.trimmed().isEmpty()) return;
             Draft draft;
@@ -1287,7 +1618,7 @@ bool MainWindow::appendTextBlock(const QString& text)
             else                    reloadPreservingSelection();
         } else if (!text.trimmed().isEmpty()) {
             service_.appendTo(editingBuffer_, Item::makeText(text));
-            stored = true;
+            stored = appended = true;
         }
     });
     if (!ok) return false;
@@ -1295,6 +1626,7 @@ bool MainWindow::appendTextBlock(const QString& text)
     if (editingBuffer_ != kNoBuffer)
         canvas_->setItems(items_.listForBuffer(editingBuffer_));
     model_->invalidatePreview(editingBuffer_);
+    if (appended) reloadPreservingSelection();   // to the top of RECENT, as for images
     // Deliberately no pending card here. Pasting text produces a card; it is
     // not also a request to write another one. Ctrl+T is that request, and it
     // returns above.
@@ -1344,12 +1676,16 @@ void MainWindow::emptyTrash()
     box.setDefaultButton(QMessageBox::Cancel);
     box.exec();
     if (box.clickedButton() != confirm) return;
+    emptyTrashConfirmed();
+}
 
+void MainWindow::emptyTrashConfirmed()
+{
     toast_->dismiss();   // whatever it was offering no longer exists
     editingBuffer_ = kNoBuffer;
     canvas_->showNothingSelected();
     service_.emptyTrash();
-    reconcileBlobs(items_, blobs_, paths::thumbsDir(), undoProtectedBlobs_);  // reclaim blobs AND thumbnails
+    sweeper_->start();   // reclaim blobs AND thumbnails, off the UI thread
     reloadPreservingSelection();
     updateEmptyTrashButton();
 }
@@ -1379,23 +1715,6 @@ void MainWindow::newDraft()
     canvas_->setFocus(Qt::OtherFocusReason);
 }
 
-// Breeze paints the menu bar in the desktop colour scheme's *header* colours,
-// not the application palette. So when Napkin's theme differs from the
-// desktop's, the bar did too: light desktop + Napkin Dark gave dark labels on
-// a dark bar — invisible, found by a usability test — and dark desktop +
-// Napkin Light a black strip across a white window. Menus, cards and dialogs
-// all follow the palette already; only the bar needs telling.
-void MainWindow::styleMenuBar()
-{
-    const QPalette p = palette();
-    menuBar()->setStyleSheet(QStringLiteral(
-        "QMenuBar { background-color: %1; color: %2; }"
-        "QMenuBar::item { background: transparent; padding: 4px 10px; border-radius: 4px; }"
-        "QMenuBar::item:selected, QMenuBar::item:pressed { background-color: %3; color: %4; }")
-        .arg(p.color(QPalette::Window).name(), p.color(QPalette::WindowText).name(),
-             p.color(QPalette::Highlight).name(), p.color(QPalette::HighlightedText).name()));
-}
-
 void MainWindow::styleToolbarIcons()
 {
     // The window's palette, not the buttons': this runs from the window's own
@@ -1403,26 +1722,85 @@ void MainWindow::styleToolbarIcons()
     // the button's palette drew the icon in the theme being left.
     const qreal dpr = devicePixelRatioF();
     const QPalette pal = palette();
-    const QSize size(16, 16);
+    const QSize size = newButton_ ? newButton_->iconSize() : QSize(18, 18);
     auto apply = [&](QAbstractButton* button, const char* name, icons::GlyphPainter fallback) {
         if (!button) return;
         button->setIcon(icons::libraryIcon(name, pal, size.width(), dpr, fallback));
         button->setIconSize(size);
     };
     apply(newButton_, "plus", &icons::drawPlus);
-    apply(overflowButton_, "ellipsis", &icons::drawMore);
-    apply(trashToggle_, "trash-2", &icons::drawTrash);
+    apply(overflowButton_, "menu", &icons::drawMenu);
     apply(settingsButton_, "settings", &icons::drawGear);
+    // The switch's segments are words, as the mockup has them; the field's
+    // magnifier is the one glyph that says what an empty box is for.
+    if (searchGlyph_)
+        searchGlyph_->setIcon(icons::libraryIcon(
+            "search", pal, style()->pixelMetric(QStyle::PM_SmallIconSize, nullptr, search_), dpr,
+            &icons::drawSearch));
+}
+
+// Leaving full screen goes back to how the window was — maximized stays
+// maximized — rather than always to a normal window.
+void MainWindow::setFullScreen(bool on)
+{
+    if (on == isFullScreen()) return;
+    if (on) {
+        wasMaximized_ = isMaximized();
+        showFullScreen();
+    } else if (wasMaximized_) {
+        showMaximized();
+    } else {
+        showNormal();
+    }
 }
 
 void MainWindow::changeEvent(QEvent* e)
 {
-    if (e->type() == QEvent::PaletteChange) { styleMenuBar(); styleToolbarIcons(); }
+    if (e->type() == QEvent::WindowStateChange && fullScreenAction_)
+        fullScreenAction_->setChecked(isFullScreen());
+    if (e->type() == QEvent::PaletteChange) styleToolbarIcons();
+    if (e->type() == QEvent::FontChange || e->type() == QEvent::ApplicationFontChange)
+        sizeHeaderControls();
     QMainWindow::changeEvent(e);
+}
+
+// The mockup's 38px controls and 94px segments at the default size, growing
+// with the text: fixed, "Home" and "Trash" filled their segments edge to edge
+// at 200% and a longer translation would have been cut (independent review).
+void MainWindow::sizeHeaderControls()
+{
+    if (!search_) return;
+    const QFontMetrics fm(font());
+    const int h = std::max(tokens::kHeaderControlH, fm.height() + 20);
+    search_->setFixedHeight(h);
+    for (QToolButton* b : {newButton_, settingsButton_, overflowButton_})
+        if (b) {
+            b->setFixedSize(h, h);
+            b->setIconSize(QSize(h * 18 / 38, h * 18 / 38));   // the mockup's 18 in 38
+        }
+    if (emptyTrashButton_) emptyTrashButton_->setFixedHeight(h);
+    int segment = 94;
+    for (QPushButton* b : {homeSegment_, trashToggle_}) {
+        if (!b) continue;
+        QFont bold = font();
+        bold.setWeight(QFont::DemiBold);   // the chosen one is drawn heavier
+        segment = std::max(segment, QFontMetrics(bold).horizontalAdvance(b->text()) + 40);
+    }
+    for (QPushButton* b : {homeSegment_, trashToggle_})
+        if (b) b->setFixedSize(segment, h);
+    if (appMenu_) styleToolbarIcons();   // redrawn at the new size, not scaled up
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event)
 {
+    if (event->type() == QEvent::MouseButtonPress
+        && static_cast<QMouseEvent*>(event)->button() == Qt::BackButton
+        && model_->mode() == BufferListModel::Mode::Trash) {
+        if (auto* w = qobject_cast<QWidget*>(watched); w && w->window() == this) {
+            goHome();
+            return true;
+        }
+    }
     // With the list focused on an empty napkin, typed letters were list
     // commands and type-ahead search: "P" pinned, "K" kept, anything else
     // jumped to another napkin. None of that is what someone typing on an
@@ -1487,6 +1865,9 @@ void MainWindow::selectBuffer(int row)
     if (row < 0) {
         editingBuffer_ = kNoBuffer;
         canvas_->showNothingSelected();
+        // Deferred: this runs inside the view's own selection change (a model
+        // reset clears the current row), where changing it again re-enters.
+        QTimer::singleShot(0, this, &MainWindow::selectLatestIfNone);
         return;
     }
 
@@ -1495,8 +1876,12 @@ void MainWindow::selectBuffer(int row)
 
     // A search narrows the board as well as the list: seeing which buffer
     // matched and then having to re-find the item inside it is half an answer.
-    if (id != kNoBuffer && model_->isSearching())
-        canvas_->setSearch(model_->query(), matchingItems(db_, id, model_->query()));
+    // Found by its name alone, nothing on it matched: show all of it rather
+    // than a board filtered down to nothing.
+    const auto matching = id != kNoBuffer && model_->isSearching()
+                              ? matchingItems(db_, id, model_->query()) : std::vector<ItemId>{};
+    if (!matching.empty())
+        canvas_->setSearch(model_->query(), matching);
     else
         canvas_->setSearch(QString(), {});
 }
@@ -1523,6 +1908,7 @@ void MainWindow::removeItems(const QList<ItemId>& ids, bool cut)
     if (removed.empty()) return;
 
     const BufferId buffer = editingBuffer_;
+    const QString name = napkinName(buffer);
     const int firstRemovedIndex = canvas_->indexOf(ids.first());
     const std::optional<Buffer> before = buffers_.find(buffer);
 
@@ -1545,8 +1931,12 @@ void MainWindow::removeItems(const QList<ItemId>& ids, bool cut)
         model_->invalidatePreview(buffer);
     }
 
-    pendingCut_ = {};
+    // Only a new cut replaces a pending one. A delete in between used to
+    // clear it too, so the paste never finished the cut — and with offers
+    // stacking, undoing everything then put back a second copy of what had
+    // been cut and pasted.
     if (cut) {
+        pendingCut_ = {};
         bool faithful = removed.size() == 1;
         if (!faithful) {
             faithful = true;
@@ -1561,13 +1951,16 @@ void MainWindow::removeItems(const QList<ItemId>& ids, bool cut)
     const int n = int(removed.size());
     // Cut is not a deletion from the user's point of view — the item is on its
     // way somewhere — so it must not announce itself as one.
+    // Named, because offers stack: "Item moved to trash" twice over, from two
+    // napkins, said nothing about which Undo would put back what.
     const QString message =
-        cut                 ? (n == 1 ? tr("Item cut") : tr("%1 items cut").arg(n))
-        : trashed.wholeNapkin ? tr("Napkin moved to trash")
-        : n == 1            ? tr("Item moved to trash")
-                            : tr("%1 items moved to trash").arg(n);
+        cut                 ? (n == 1 ? tr("Item cut from “%1”").arg(name)
+                                      : tr("%1 items cut from “%2”").arg(n).arg(name))
+        : trashed.wholeNapkin ? tr("“%1” moved to trash").arg(name)
+        : n == 1            ? tr("Item moved to trash from “%1”").arg(name)
+                            : tr("%1 items moved to trash from “%2”").arg(n).arg(name);
 
-    toast_->offer(message, [this, buffer, removed, before, trashed] {
+    const int offer = toast_->offer(message, [this, buffer, removed, before, trashed] {
         if (!guarded(tr("Could not undo that"), [&] {
                 service_.untrashItems(buffer, trashed, removed);
                 if (trashed.wholeNapkin && before) {
@@ -1583,6 +1976,7 @@ void MainWindow::removeItems(const QList<ItemId>& ids, bool cut)
             if (editingBuffer_ == buffer) canvas_->setItems(items_.listForBuffer(buffer), -1);
         }
     });
+    if (pendingCut_.holder != kNoBuffer) pendingCut_.offer = offer;
 }
 
 void MainWindow::discardItems(const QList<ItemId>& ids)
@@ -1599,6 +1993,7 @@ void MainWindow::discardItems(const QList<ItemId>& ids)
     if (removed.empty()) return;
 
     const BufferId buffer = editingBuffer_;
+    const QString name = napkinName(buffer);
     const int firstRemovedIndex = canvas_->indexOf(ids.first());
     if (!guarded(tr("Could not delete those items"),
                  [&] { for (ItemId id : ids) service_.removeItem(buffer, id); }))
@@ -1627,15 +2022,15 @@ void MainWindow::discardItems(const QList<ItemId>& ids)
 
     // Hold the blobs this offer would put back, so no sweep can reclaim them
     // while it is still on screen.
-    undoProtectedBlobs_.clear();
+    QSet<QString> holds;
     for (const auto& item : removed)
-        if (!item.blobHash.isEmpty()) undoProtectedBlobs_.insert(item.blobHash);
+        if (!item.blobHash.isEmpty()) holds.insert(item.blobHash);
 
     const QString message = removed.size() == 1
-        ? tr("Item deleted")
-        : tr("%n items deleted", nullptr, int(removed.size()));
+        ? tr("Item deleted from “%1”").arg(name)
+        : tr("%1 items deleted from “%2”").arg(removed.size()).arg(name);
 
-    toast_->offer(emptied ? tr("Napkin moved to trash") : message,
+    toast_->offer(emptied ? tr("“%1” moved to trash").arg(name) : message,
                   [this, buffer, removed, before, emptied] {
                       if (!guarded(tr("Could not undo that"), [&] {
                               for (const auto& item : removed) items_.restoreAt(item);
@@ -1650,14 +2045,41 @@ void MainWindow::discardItems(const QList<ItemId>& ids)
                       reloadPreservingSelection();
                       if (const int row = model_->rowForId(buffer); row >= 0)
                           view_->setCurrentIndex(model_->index(row, 0));
-                  });
+                  }, holds);
 }
 
-bool MainWindow::flushEditor()
+bool MainWindow::flushEditor(bool timed)
 {
     if (!canvas_) return true;
     auto* editor = canvas_;
-    const auto dirty = editor->dirtyText();
+    auto dirty = editor->dirtyText();
+    // Nothing new to write. A timed flush never waits for the worker; any
+    // other flush does, because its caller needs what is queued to have landed.
+    if (dirty.empty() && (timed || !saver_->isBusy())) return true;
+
+    // Typing into a large note: write it on the worker. Only notes that
+    // already have rows — a draft or a new note needs its id back now — and
+    // only when it is worth it, or when a background save is already queued,
+    // since anything else would have to wait for it anyway to stay in order.
+    if (timed && saver_->isAvailable() && editingBuffer_ != kNoBuffer && !dirty.empty()) {
+        bool allRows = true;
+        qsizetype size = 0;
+        for (const auto& d : dirty) { allRows &= d.id != kNoItem; size += d.text.size(); }
+        if (allRows && (size > kBackgroundSaveChars || saver_->isBusy())) {
+            std::vector<BackgroundSaver::Entry> entries;
+            for (const auto& d : dirty)
+                if (!isBlank(d.text)) entries.push_back({d.id, d.text, d.generation});
+            if (!entries.empty()) saver_->save(editingBuffer_, std::move(entries));
+            return true;
+        }
+    }
+
+    // Everything else is synchronous, and lands after anything still queued:
+    // an older snapshot must never be written over a newer one.
+    if (saver_->isBusy()) {
+        saver_->waitForIdle();
+        dirty = editor->dirtyText();
+    }
     if (dirty.empty()) return true;
 
     // Whitespace is not content: a draft of blank text still writes no row.
@@ -1725,10 +2147,15 @@ bool MainWindow::flushEditor()
 // Flushes, and if the write failed tells the user rather than letting the text
 // evaporate. Retries are bounded: an earlier build re-armed the debounce on
 // every failure and spun at ~3 transactions a second, for ever, in silence.
-bool MainWindow::flushAndReportFailure()
+bool MainWindow::flushAndReportFailure(bool timed)
 {
-    if (flushEditor()) return true;
+    if (flushEditor(timed)) return true;
+    reportSaveFailure();
+    return false;
+}
 
+void MainWindow::reportSaveFailure()
+{
     if (saveFailures_ == 1 || saveFailures_ % 20 == 0) {
         reportProblem(tr("Could not save this napkin"),
                       tr("Your text is still here and has not been changed. Napkin will keep "
@@ -1736,7 +2163,6 @@ bool MainWindow::flushAndReportFailure()
                          "folder is not writable."));
     }
     if (saveFailures_ < 60) autosave_->noteChange();   // bounded retry
-    return false;
 }
 
 void MainWindow::openImageItem(ItemId id)
@@ -1751,8 +2177,22 @@ void MainWindow::openImageItem(ItemId id)
                          "The rest of the napkin is unchanged."));
         return;
     }
-    Lightbox box(path, item->animated, item->sourceName, this);
+    // Every image on the board, in the order the board shows them, so the
+    // arrow keys page through the napkin from the one that was opened.
+    std::vector<Lightbox::Image> images;
+    int start = 0;
+    for (ItemId other : canvas_->itemOrder()) {
+        const auto each = other == id ? item : items_.find(other);
+        if (!each || each->type != ItemType::Image) continue;
+        if (other == id) start = int(images.size());
+        images.push_back({blobs_.pathFor(each->blobHash, each->mime), each->animated,
+                          each->sourceName});
+    }
+    if (images.empty()) images.push_back({path, item->animated, item->sourceName});
+    Lightbox box(std::move(images), start, this);
+    lightbox_ = &box;
     box.exec();
+    lightbox_ = nullptr;
 }
 
 bool MainWindow::event(QEvent* e)
@@ -1812,6 +2252,74 @@ void MainWindow::closeEvent(QCloseEvent* e)
 
 // Creating the icon is what makes it appear, so it is created on demand and
 // destroyed when the setting is turned off rather than being left hidden.
+void MainWindow::applyShortcutSetting()
+{
+    const bool wanted = SettingsDialog::captureShortcut();
+    if (!wanted) {
+        if (shortcut_) shortcut_->disable();
+        return;
+    }
+    if (!shortcut_) {
+        shortcut_ = new GlobalShortcut(this);
+        connect(shortcut_, &GlobalShortcut::activated, this, &MainWindow::pasteFromGlobalShortcut);
+        connect(shortcut_, &GlobalShortcut::stateChanged, this, [this](const QString& problem) {
+            if (!problem.isEmpty()) toast_->inform(problem);
+            else if (shortcut_->isActive() && !shortcut_->trigger().isEmpty())
+                toast_->inform(tr("%1 now pastes into Napkin from any app")
+                                   .arg(shortcut_->trigger()));
+        });
+    }
+    shortcut_->enable();
+}
+
+// A small window of its own, made fresh for each press, rather than raising
+// the main one. Measured on KDE Plasma 6.7 / Wayland: the portal's Activated
+// signal carries no activation token, so KWin refuses to raise an existing
+// window — it only flashes the taskbar entry — and an unfocused window is
+// served an empty clipboard. A NEW window from the same running process is
+// given focus (46 ms) and can read the clipboard. It closes itself when done,
+// and focus goes back to whatever the user was in; the main window never moves.
+void MainWindow::pasteFromGlobalShortcut()
+{
+    auto* capture = new QLabel(tr("Adding to Napkin…"));
+    capture->setObjectName(QStringLiteral("captureWindow"));
+    capture->setAttribute(Qt::WA_DeleteOnClose);
+    capture->setWindowTitle(tr("Napkin"));
+    capture->setAlignment(Qt::AlignCenter);
+    capture->setMargin(24);
+    capture->setMinimumWidth(360);
+    capture->setWindowIcon(windowIcon());
+    capture->show();
+    capture->raise();
+    capture->activateWindow();
+    capture_ = capture;
+
+    auto* waiting = new QTimer(capture);
+    waiting->setInterval(20);
+    auto tries = std::make_shared<int>(0);
+    connect(waiting, &QTimer::timeout, capture, [this, capture, waiting, tries] {
+        if (!capture->isActiveWindow() && ++*tries < 50) return;
+        waiting->stop();
+        QString said;
+        if (!capture->isActiveWindow()) {
+            // Refused focus after all: say so where it can be seen, rather than
+            // pasting an empty clipboard and calling it done.
+            said = tr("Napkin could not read the clipboard from here. Switch to Napkin "
+                      "and press Ctrl+V.");
+        } else if (readClipboard(QApplication::clipboard()->mimeData()).kind
+                   == ClipboardContent::Kind::None) {
+            said = tr("Nothing on the clipboard that Napkin can hold — copy some text or an image");
+        } else {
+            pasteFromClipboard();
+            said = currentBufferIsLive() ? tr("Added to “%1”").arg(napkinName(editingBuffer_))
+                                         : tr("Added to Napkin");
+        }
+        capture->setText(said);
+        QTimer::singleShot(said.size() > 60 ? 2600 : 1100, capture, &QWidget::close);
+    });
+    waiting->start();
+}
+
 void MainWindow::applyTraySetting()
 {
     const bool wanted = SettingsDialog::keepInTray();

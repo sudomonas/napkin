@@ -38,22 +38,17 @@ public:
                      const QPalette& pal) const;
     int sectionHeight(const QModelIndex& index) const;
 
-    static constexpr int kMarginX  = 16;
-    static constexpr int kMarginY  = 4;
-    static constexpr int kPadding  = 14;
+    static constexpr int kMarginX  = tokens::kRowMarginX;
+    static constexpr int kMarginY  = tokens::kRowMarginY;
+    static constexpr int kPadding  = tokens::kRowPad;
     // The list's rows are cards too, so they use the card radius. They were 6
     // against the board's 10, which is why the two panes read as two different
     // levels of finish even when everything else matched.
     static constexpr int kRadius   = tokens::kCardRadius;
-    static constexpr int kSectionH = 36;
-
-    // A card holding two words was 1360px wide on a wide window, with the state
-    // glyphs 1250px from the text they describe. SPEC §7 asks for content to
-    // dominate; past this measure it is mostly margin pretending to be content.
-    static constexpr int kMaxCardWidth = 760;
-
-    static constexpr int kThumbSize = 52;       // a lone image
-    static constexpr int kThumbSizeMulti = 38;  // several in a row
+    static constexpr int kSectionH = tokens::kRowSectionH;
+    static constexpr int kMaxCardWidth = tokens::kRowMaxWidth;
+    static constexpr int kThumbSize = tokens::kRowThumb;
+    static constexpr int kThumbSizeMulti = tokens::kRowThumbMulti;
 
 private:
     QFont timestampFont(const QFont& base) const;

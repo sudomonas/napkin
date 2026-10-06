@@ -17,6 +17,7 @@
 #include "../domain/Links.h"
 #include <QMouseEvent>
 #include <QScrollBar>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace napkin {
@@ -51,6 +52,16 @@ ItemCanvas::ItemCanvas(Thumbnailer& thumbs, BlobStore& blobs, QWidget* parent)
     body_->setAutoFillBackground(false);
     setWidget(body_);
 
+    // The part of the board below the fold is measured in slices small enough
+    // that the window never stops answering while it happens.
+    layoutTimer_ = new QTimer(this);
+    layoutTimer_->setSingleShot(true);
+    layoutTimer_->setInterval(0);
+    connect(layoutTimer_, &QTimer::timeout, this, [this] {
+        if (board_.placeFor(items_, 6)) resizeBody();
+        if (!board_.complete()) layoutTimer_->start();
+    });
+
     // Rebuild the visible band as the board scrolls.
     connect(verticalScrollBar(), &QScrollBar::valueChanged, this,
             [this] { syncVisibleCards(); });
@@ -63,6 +74,8 @@ ItemCanvas::ItemCanvas(Thumbnailer& thumbs, BlobStore& blobs, QWidget* parent)
 
 void ItemCanvas::clearItems()
 {
+    layoutTimer_->stop();
+    carried_.clear();
     cards_.clear();
     textCards_.clear();
     live_.clear();
@@ -165,7 +178,10 @@ void ItemCanvas::showNothingSelected()
 
 int ItemCanvas::indexOf(ItemId id) const
 {
-    return board_.indexOf(id);
+    // The board's order is items_'s order, placed or not.
+    for (size_t i = 0; i < items_.size(); ++i)
+        if (items_[i].id == id) return int(i);
+    return -1;
 }
 
 QList<ItemId> ItemCanvas::itemOrder() const
@@ -274,6 +290,10 @@ ItemCard* ItemCanvas::cardFor(const Item& item)
             relayout();
         });
         textCards_.push_back(text);
+        if (const auto it = carried_.constFind(item.id); it != carried_.constEnd()) {
+            text->carryOver(it->generation);
+            carried_.erase(it);
+        }
         card = text;
     } else {
         card = new ImageItemCard(item, thumbs_, blobs_, body_);
@@ -287,11 +307,15 @@ void ItemCanvas::syncVisibleCards()
 {
     if (items_.empty()) return;
 
-    const QRect visible(0, verticalScrollBar()->value(),
-                        viewport()->width(), viewport()->height());
     // An overscan band either side keeps scrolling smooth without holding the
     // whole board in memory.
-    const auto wanted = board_.indicesIn(visible, viewport()->height());
+    const int overscan = viewport()->height();
+    board_.placeThrough(items_, verticalScrollBar()->value() + viewport()->height() + overscan);
+    // Before reading the scroll position: a body that shrinks clamps it.
+    resizeBody();
+    const QRect visible(0, verticalScrollBar()->value(),
+                        viewport()->width(), viewport()->height());
+    const auto wanted = board_.indicesIn(visible, overscan);
 
     QSet<ItemId> keep;
     for (int i : wanted) keep.insert(board_.placements()[size_t(i)].id);
@@ -332,6 +356,14 @@ void ItemCanvas::syncVisibleCards()
 
 void ItemCanvas::setItems(const std::vector<Item>& items, int selectIndex)
 {
+    // Unsaved text survives the rebuild. Callers pass rows read from the
+    // database, which can be older than what is on screen — a save handed to
+    // the background has not landed yet, or the board's copy of a long note
+    // is not refreshed while it is typed into — and rebuilding from them
+    // showed the older text, clean, and the next keystroke saved it over the
+    // newer (independent review).
+    carryUnsaved();
+    auto carried = std::exchange(carried_, {});
     clearItems();
     if (items.empty()) { showEmptyBuffer(); return; }
     bufferShown_ = true;
@@ -339,6 +371,9 @@ void ItemCanvas::setItems(const std::vector<Item>& items, int selectIndex)
     placeholder_->hide();
 
     allItems_ = items;
+    for (const auto& item : allItems_)
+        if (const auto it = carried.constFind(item.id); it != carried.constEnd())
+            carried_.insert(item.id, *it);
     applyFilter();
 
     if (selectIndex >= 0 && !items_.empty()) {
@@ -374,6 +409,13 @@ void ItemCanvas::applyFilter()
 {
     const QStringList terms = query_.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
 
+    // Every card is about to be destroyed; see setItems().
+    carryUnsaved();
+    const bool carrying = !carried_.isEmpty();
+    for (auto& item : allItems_)
+        if (const auto it = carried_.constFind(item.id); it != carried_.constEnd())
+            item.text = it->text;
+
     items_.clear();
     for (const auto& item : allItems_) {
         // An unwritten composer is never filtered away — it is where you are
@@ -401,15 +443,31 @@ void ItemCanvas::applyFilter()
     relayout();
     for (auto* card : textCards_) card->setSearchTerms(terms);
     emit filterChanged();
+    // Still unsaved, so autosave has to know about it again. Checked from
+    // before the relayout: the rebuilt cards have taken their entries by now.
+    if (carrying) emit edited();
 }
 
 void ItemCanvas::relayout()
 {
     board_.setViewport(stableWidth());
     if (!textCards_.empty()) board_.setFont(textCards_.front()->font());
-    board_.rebuild(items_);
-    body_->setFixedSize(stableWidth(), std::max(board_.totalHeight(), viewport()->height()));
+    // Only what is on screen now; syncVisibleCards() places as far as it
+    // needs, and the rest is measured while the window is idle.
+    board_.reset(items_);
     syncVisibleCards();
+    if (!board_.complete()) layoutTimer_->start();
+}
+
+void ItemCanvas::resizeBody()
+{
+    body_->setFixedSize(stableWidth(), std::max(board_.totalHeight(), viewport()->height()));
+}
+
+void ItemCanvas::finishLayout()
+{
+    board_.placeAll(items_);
+    resizeBody();
 }
 
 void ItemCanvas::applySelection(ItemId id, Qt::KeyboardModifiers modifiers)
@@ -723,7 +781,9 @@ void ItemCanvas::setCursorTo(int index, Qt::KeyboardModifiers modifiers)
     else if (!(modifiers & Qt::ControlModifier)) applySelection(id, Qt::NoModifier);
 
     // The card the cursor just moved to may not exist yet. Scroll by the slot's
-    // geometry, which the board knows for every item; that build the card.
+    // geometry, which the board knows for every item once it is all placed;
+    // that builds the card.
+    finishLayout();
     const auto& placed = board_.placements();   // not `slots`: Qt owns that word
     if (cursor_ < int(placed.size())) {
         const QRect r = placed[size_t(cursor_)].rect;
@@ -751,6 +811,7 @@ void ItemCanvas::moveCursorSpatially(BoardLayout::Step step, Qt::KeyboardModifie
     // doing nothing — whichever direction it was.
     if (cursor_ < 0) { setCursorTo(0, modifiers); return; }
 
+    finishLayout();   // the neighbour below may not have been placed yet
     const int target = board_.neighbour(cursor_, step);
     if (target < 0) return;   // the board ends this way; stay put
     setCursorTo(target, modifiers);
@@ -811,7 +872,11 @@ std::vector<ItemCanvas::DirtyText> ItemCanvas::dirtyText() const
 {
     std::vector<DirtyText> out;
     for (auto* card : textCards_)
-        if (card->isDirty()) out.push_back({card->itemId(), card->text()});
+        if (card->isDirty())
+            out.push_back({card->itemId(), card->text(), card->editGeneration()});
+    // Unsaved text whose card has not been rebuilt yet — below the fold.
+    for (auto it = carried_.constBegin(); it != carried_.constEnd(); ++it)
+        out.push_back({it.key(), it->text, it->generation});
     return out;
 }
 
@@ -824,6 +889,26 @@ void ItemCanvas::acknowledgeSaved(const QList<ItemId>& ids, Timestamp when)
 void ItemCanvas::markClean()
 {
     for (auto* card : textCards_) card->markClean();
+    carried_.clear();   // dirtyText() included them, and they were written
+}
+
+bool ItemCanvas::markSavedIfUnchanged(ItemId id, quint64 generation, const QString& saved)
+{
+    for (auto* card : textCards_)
+        if (card->itemId() == id) return card->markCleanIfUnchanged(generation, saved);
+    if (const auto it = carried_.constFind(id); it != carried_.constEnd()
+        && it->generation == generation) {
+        carried_.erase(it);
+        return true;
+    }
+    return false;
+}
+
+void ItemCanvas::carryUnsaved()
+{
+    for (auto* card : textCards_)
+        if (card->isDirty() && card->itemId() != kNoItem)
+            carried_.insert(card->itemId(), {card->text(), card->editGeneration()});
 }
 
 bool ItemCanvas::bindComposer(ItemId newId)

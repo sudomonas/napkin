@@ -84,7 +84,7 @@ void SweepDialog::populate()
 
         const auto counts = items_.countsForBuffer(buffer.id);
         const auto preview = derivePreview(items_.previewHead(buffer.id),
-                                           counts.total, counts.images);
+                                           counts.total, counts.images, {}, buffer.name);
 
         auto* row = new QListWidgetItem(
             QStringLiteral("%1\n%2")

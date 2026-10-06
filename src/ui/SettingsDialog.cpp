@@ -1,6 +1,9 @@
 #include "SettingsDialog.h"
+#include "../app/GlobalShortcut.h"
 #include "../domain/BufferService.h"
 #include "Tokens.h"
+#include "NapkinStyle.h"
+#include "SurfacePanel.h"
 #include "TrayIcon.h"
 
 #include <QApplication>
@@ -16,9 +19,20 @@
 #include <QSpinBox>
 #include <QFontComboBox>
 #include <QStyleFactory>
+#include <QFontDatabase>
+#include <QHBoxLayout>
+#include <QStackedWidget>
+#include <QListWidget>
+#include <QStyleHints>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+#include <QAccessibilityHints>
+#endif
 #include <QTimer>
 #include <QEvent>
 #include <QStyleHints>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+#include <QAccessibilityHints>
+#endif
 #include <QStyle>
 #include <algorithm>
 #include <QVBoxLayout>
@@ -31,6 +45,7 @@ constexpr auto kFontFamily = "appearance/fontFamily";
 constexpr auto kTextScale = "appearance/textScalePercent";
 constexpr auto kAccent = "appearance/accent";
 constexpr auto kKeepInTray = "behaviour/keepInTray";
+constexpr auto kCaptureShortcut = "behaviour/captureShortcut";
 constexpr auto kOlder = "lifecycle/olderThanDays";
 constexpr auto kRetention = "lifecycle/trashRetentionDays";
 
@@ -58,23 +73,79 @@ QString& systemStyle()
     return saved;
 }
 
-// Windows' native style (windowsvista) draws controls through the system theme
-// engine, which ignores the application palette. In dark mode the window went
-// dark and every button, dropdown, field and scroll bar stayed light — and
-// under Napkin's own Dark theme they were light with white text, close to
-// invisible. test_native_style has the renders. Fusion draws everything from
-// the palette, so a dark Napkin uses it; a light one keeps the native look.
-// Elsewhere the platform style already honours the palette and is left alone.
-void applyStyle(bool dark)
+// When the desktop asks for high contrast, Napkin's look steps aside entirely —
+// the platform's style and palette, unmodified. An own look is a preference;
+// high contrast is a need (SPEC.md §14). Readable only from Qt 6.10.
+bool highContrast()
 {
-#ifdef Q_OS_WIN
-    const QString wanted = dark ? QStringLiteral("fusion") : systemStyle();
-    if (QApplication::style()->name().compare(wanted, Qt::CaseInsensitive) != 0) {
-        if (QStyle* style = QStyleFactory::create(wanted)) QApplication::setStyle(style);
-    }
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+    return QGuiApplication::styleHints()->accessibility()->contrastPreference()
+           == Qt::ContrastPreference::HighContrast;
 #else
-    Q_UNUSED(dark);
+    return false;
 #endif
+}
+
+// Napkin's own style on every platform (SPEC.md §7, "The design system").
+// It replaced a Windows-only switch to Fusion in dark mode: windowsvista
+// ignores the palette, so dark mode left every control light — a platform
+// style deciding what Napkin looks like, which is now never the case.
+void applyStyle()
+{
+    if (highContrast()) {
+        if (qobject_cast<NapkinStyle*>(QApplication::style()))
+            if (QStyle* style = QStyleFactory::create(systemStyle())) QApplication::setStyle(style);
+        return;
+    }
+    if (!qobject_cast<NapkinStyle*>(QApplication::style()))
+        QApplication::setStyle(new NapkinStyle);
+}
+
+// Whether the desktop is dark, for "follow the system". The colour scheme when
+// the platform says; otherwise the platform's own palette, read before Napkin
+// replaced it.
+bool systemIsDark()
+{
+    switch (QGuiApplication::styleHints()->colorScheme()) {
+    case Qt::ColorScheme::Dark:  return true;
+    case Qt::ColorScheme::Light: return false;
+    default: return !tokens::isLightTheme(systemPalette());
+    }
+}
+
+// Inter, bundled, so text looks the same everywhere. Registered once; if the
+// resource cannot be read the platform's face is used and nothing else changes.
+QString napkinFamily()
+{
+    static const QString family = [] {
+        QString found;
+        for (const char* weight : {"Regular", "Medium", "SemiBold", "Bold"}) {
+            const int id = QFontDatabase::addApplicationFont(
+                QStringLiteral(":/resources/fonts/inter/Inter-%1.ttf").arg(QLatin1String(weight)));
+            if (id >= 0 && found.isEmpty())
+                found = QFontDatabase::applicationFontFamilies(id).value(0);
+        }
+        return found;
+    }();
+    return family;
+}
+
+// The size everything is scaled from: the body size the mockup was drawn at,
+// unless the desktop asks for larger. A platform default of 9pt (Windows) made
+// every card a size smaller than the same card on KDE; a desktop set larger
+// for legibility is still honoured.
+qreal basePointSize()
+{
+    return std::max(tokens::kBodyPointSize, systemFont().pointSizeF());
+}
+
+QFont baseFont(const QString& family, int percent)
+{
+    QFont font = systemFont();
+    const QString face = family.isEmpty() ? napkinFamily() : family;
+    if (!face.isEmpty()) font.setFamilies({face});
+    font.setPointSizeF(std::max(tokens::kMinPointSize, basePointSize() * percent / 100.0));
+    return font;
 }
 
 // A short, named set rather than a colour wheel. Napkin is not a theming
@@ -110,48 +181,29 @@ QPalette buildPalette(bool dark, const QPalette& system)
     QPalette p;
     auto both = [&](QPalette::ColorRole role, QColor c) { p.setColor(role, c); };
 
-    if (!dark) {
-        both(QPalette::Window,        QColor(239, 240, 241));
-        both(QPalette::WindowText,    QColor( 35,  38,  41));
-        both(QPalette::Base,          QColor(252, 252, 252));
-        both(QPalette::AlternateBase, QColor(247, 247, 247));
-        both(QPalette::Text,          QColor( 35,  38,  41));
-        both(QPalette::Button,        QColor(239, 240, 241));
-        both(QPalette::ButtonText,    QColor( 35,  38,  41));
-        both(QPalette::BrightText,    QColor(255, 255, 255));
-        both(QPalette::ToolTipBase,   QColor(247, 247, 247));
-        both(QPalette::ToolTipText,   QColor( 35,  38,  41));
-        both(QPalette::Light,         QColor(255, 255, 255));
-        both(QPalette::Midlight,      QColor(246, 247, 248));
-        both(QPalette::Mid,           QColor(196, 199, 201));
-        both(QPalette::Dark,          QColor(136, 140, 143));
-        both(QPalette::Shadow,        QColor( 79,  82,  85));
-        both(QPalette::Link,          QColor( 41, 128, 185));
-        both(QPalette::LinkVisited,   QColor(127, 140, 141));
-    } else {
-        both(QPalette::Window,        QColor( 35,  38,  41));
-        both(QPalette::WindowText,    QColor(252, 252, 252));
-        both(QPalette::Base,          QColor( 27,  30,  32));
-        both(QPalette::AlternateBase, QColor( 35,  38,  41));
-        both(QPalette::Text,          QColor(252, 252, 252));
-        both(QPalette::Button,        QColor( 49,  54,  59));
-        both(QPalette::ButtonText,    QColor(252, 252, 252));
-        both(QPalette::BrightText,    QColor(255, 255, 255));
-        both(QPalette::ToolTipBase,   QColor( 49,  54,  59));
-        both(QPalette::ToolTipText,   QColor(252, 252, 252));
-        both(QPalette::Light,         QColor( 69,  76,  82));
-        both(QPalette::Midlight,      QColor( 49,  54,  59));
-        both(QPalette::Mid,           QColor( 39,  43,  46));
-        both(QPalette::Dark,          QColor( 24,  26,  28));
-        both(QPalette::Shadow,        QColor( 16,  18,  19));
-        both(QPalette::Link,          QColor( 61, 174, 233));
-        both(QPalette::LinkVisited,   QColor(155,  89, 182));
-    }
+    const tokens::ThemeColors& c = dark ? tokens::kDarkColors : tokens::kLightColors;
+    both(QPalette::Window,        QColor::fromRgb(c.window));
+    both(QPalette::WindowText,    QColor::fromRgb(c.windowText));
+    both(QPalette::Base,          QColor::fromRgb(c.base));
+    both(QPalette::AlternateBase, QColor::fromRgb(c.alternateBase));
+    both(QPalette::Text,          QColor::fromRgb(c.text));
+    both(QPalette::Button,        QColor::fromRgb(c.button));
+    both(QPalette::ButtonText,    QColor::fromRgb(c.buttonText));
+    both(QPalette::BrightText,    QColor::fromRgb(c.brightText));
+    both(QPalette::ToolTipBase,   QColor::fromRgb(c.toolTipBase));
+    both(QPalette::ToolTipText,   QColor::fromRgb(c.toolTipText));
+    both(QPalette::Light,         QColor::fromRgb(c.light));
+    both(QPalette::Midlight,      QColor::fromRgb(c.midlight));
+    both(QPalette::Mid,           QColor::fromRgb(c.mid));
+    both(QPalette::Dark,          QColor::fromRgb(c.dark));
+    both(QPalette::Shadow,        QColor::fromRgb(c.shadow));
+    both(QPalette::Link,          QColor::fromRgb(c.link));
+    both(QPalette::LinkVisited,   QColor::fromRgb(c.linkVisited));
 
     // Placeholders are text and get no contrast exemption (SPEC.md §7), so this
     // is the same alpha the tokens use for the quietest readable text.
     QColor placeholder = p.color(QPalette::Text);
-    placeholder.setAlpha(161);
+    placeholder.setAlpha(tokens::kTextTertiary);
     both(QPalette::PlaceholderText, placeholder);
 
     // The accent is the user's, not ours — either the one they picked here or
@@ -165,17 +217,22 @@ QPalette buildPalette(bool dark, const QPalette& system)
 
     // Disabled is a group, not a role: without it Qt keeps the enabled colour
     // and nothing looks disabled.
-    const QColor greyed = dark ? QColor(137, 142, 147) : QColor(136, 140, 143);
+    const QColor greyed = QColor::fromRgb(c.disabledText);
     for (QPalette::ColorRole role : {QPalette::WindowText, QPalette::Text,
                                      QPalette::ButtonText, QPalette::HighlightedText})
         p.setColor(QPalette::Disabled, role, greyed);
-    p.setColor(QPalette::Disabled, QPalette::Highlight,
-               dark ? QColor(49, 54, 59) : QColor(219, 220, 221));
+    p.setColor(QPalette::Disabled, QPalette::Highlight, QColor::fromRgb(c.disabledHighlight));
 
     return p;
 }
 
 }  // namespace
+
+void SettingsDialog::setTheme(Theme t)
+{
+    QSettings().setValue(kTheme, int(t));
+    applyAppearance();
+}
 
 SettingsDialog::Theme SettingsDialog::theme()
 {
@@ -199,6 +256,11 @@ QColor SettingsDialog::accent()
     if (stored.isEmpty()) return {};
     const QColor colour(stored);
     return colour.isValid() ? colour : QColor();
+}
+
+bool SettingsDialog::captureShortcut()
+{
+    return QSettings().value(kCaptureShortcut, false).toBool() && GlobalShortcut::isSupported();
 }
 
 bool SettingsDialog::keepInTray()
@@ -229,39 +291,21 @@ void SettingsDialog::applyAppearance()
 
     // Before the palette: a style change can hand widgets its own standard
     // palette, and the one Napkin sets must be the last word.
-    const bool dark = theme() == Theme::Dark
-        || (theme() == Theme::System
-            && QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark);
-    applyStyle(dark);
+    applyStyle();
 
-    switch (theme()) {
-    case Theme::System:
-        // Even here the accent may be the user's, so the system palette is
-        // rebuilt rather than restored verbatim when one has been chosen.
-        if (accent().isValid()) {
-            QPalette p = systemPalette();
-            p.setColor(QPalette::Highlight, accent());
-            p.setColor(QPalette::HighlightedText, tokens::textOn(accent()));
-            QApplication::setPalette(p);
-        } else {
-            QApplication::setPalette(systemPalette());
-        }
-        break;
-    case Theme::Light:
-        QApplication::setPalette(buildPalette(false, systemPalette()));
-        break;
-    case Theme::Dark:
-        QApplication::setPalette(buildPalette(true, systemPalette()));
-        break;
+    // "Follow the system" follows its light or dark, in Napkin's own colours.
+    // It used to mean the platform's palette, so the same Napkin was Breeze on
+    // KDE, Adwaita-ish on GNOME and grey Fusion on Windows.
+    if (highContrast()) {
+        QApplication::setPalette(systemPalette());
+    } else {
+        const bool dark = theme() == Theme::Dark || (theme() == Theme::System && systemIsDark());
+        QApplication::setPalette(buildPalette(dark, systemPalette()));
     }
 
-    // Scaled from the platform's size, never from the current one: scaling the
+    // Scaled from the base size, never from the current one: scaling the
     // already-scaled font would compound every time this ran.
-    QFont font = systemFont();
-    const QString family = fontFamily();
-    if (!family.isEmpty()) font.setFamilies({family});
-    font.setPointSizeF(std::max(5.0, systemFont().pointSizeF() * textScalePercent() / 100.0));
-    QApplication::setFont(font);
+    QApplication::setFont(baseFont(fontFamily(), textScalePercent()));
 }
 
 namespace {
@@ -290,6 +334,12 @@ public:
         // A light/dark flip, even if no widget exists to be told of it.
         connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged,
                 &pending_, qOverload<>(&QTimer::start));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+        // High contrast switched on or off: Napkin's look steps aside or back.
+        connect(QGuiApplication::styleHints()->accessibility(),
+                &QAccessibilityHints::contrastPreferenceChanged,
+                &pending_, qOverload<>(&QTimer::start));
+#endif
     }
 
 protected:
@@ -318,20 +368,68 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
 {
     setWindowTitle(tr("Settings"));
 
-    auto* layout = new QVBoxLayout(this);
-    layout->setSpacing(14);
-    // Wide enough that the wrapped notes below are a few lines, not a column,
-    // and exactly as tall as the content. Qt under-reported this layout's
-    // minimum (539px for 607px of content), so the dialog opened squeezed and
-    // clipped both the preview and the Lifecycle notes — usability test,
-    // 2026-09-19. A settings dialog has nothing to gain from being resizable.
-    setMinimumWidth(480);
-    layout->setSizeConstraint(QLayout::SetFixedSize);
+    // Two panes, as KDE's System Settings has them: the pages on the left in a
+    // surface like the main window's sidebar, the chosen page on the right.
+    // One long column had grown to three groups and four paragraphs of notes.
+    //
+    // Exactly as large as the largest page, and not resizable: Qt under-reported
+    // the old column's minimum (539px for 607px of content), so it opened
+    // squeezed and clipped the preview and the notes (usability test,
+    // 2026-09-19). Every page is laid out at that one size.
+    auto* outer = new QVBoxLayout(this);
+    outer->setContentsMargins(tokens::kWindowMargin, tokens::kWindowMargin,
+                              tokens::kWindowMargin, tokens::kWindowMargin);
+    outer->setSpacing(tokens::kWindowMargin);
+    outer->setSizeConstraint(QLayout::SetFixedSize);
+    auto* panes = new QHBoxLayout;
+    panes->setSpacing(tokens::kHeaderGap);
+    outer->addLayout(panes);
+
+    auto* navPanel = new SurfacePanel;
+    auto* navColumn = new QVBoxLayout(navPanel);
+    navColumn->setContentsMargins(tokens::kGapTight, tokens::kGapTight, tokens::kGapTight, tokens::kGapTight);
+    auto* nav = new QListWidget;
+    nav->setObjectName(QStringLiteral("settingsPages"));
+    nav->setProperty(NapkinStyle::kShapeProperty, QStringLiteral("nav"));
+    nav->setFrameShape(QFrame::NoFrame);
+    nav->setAutoFillBackground(false);
+    nav->viewport()->setAutoFillBackground(false);
+    nav->setFixedWidth(200);
+    nav->setAccessibleName(tr("Settings pages"));
+    navColumn->addWidget(nav);
+    panes->addWidget(navPanel);
+
+    auto* pages = new QStackedWidget;
+    pages->setObjectName(QStringLiteral("settingsStack"));
+    panes->addWidget(pages, 1);
+    connect(nav, &QListWidget::currentRowChanged, pages, &QStackedWidget::setCurrentIndex);
+
+    // A page: its name as a heading, then its groups.
+    auto addPage = [&](const QString& title) {
+        auto* item = new QListWidgetItem(title, nav);
+        item->setSizeHint(QSize(0, tokens::kHeaderControlH));
+        auto* page = new QWidget;
+        auto* column = new QVBoxLayout(page);
+        column->setContentsMargins(0, 0, 0, 0);
+        column->setSpacing(tokens::kWindowMargin);
+        auto* heading = new QLabel(title);
+        heading->setFont(tokens::scaledBy(heading->font(), tokens::kTypeTitle, QFont::DemiBold));
+        column->addWidget(heading);
+        pages->addWidget(page);
+        return column;
+    };
+    auto* appearancePage = addPage(tr("Appearance"));
+    auto* napkinsPage    = addPage(tr("Napkins & trash"));
+    auto* backgroundPage = addPage(tr("In the background"));
+    setMinimumWidth(720);
 
     // --- appearance ---------------------------------------------------------
-    auto* look = new QGroupBox(tr("Appearance"));
+    auto* look = new QGroupBox(tr("Colours"));
     auto* lookForm = new QFormLayout(look);
     lookForm->setSpacing(10);
+    auto* textBox = new QGroupBox(tr("Text"));
+    auto* textForm = new QFormLayout(textBox);
+    textForm->setSpacing(10);
 
     theme_ = new QComboBox;
     theme_->addItems({tr("Follow the system"), tr("Light"), tr("Dark")});
@@ -358,29 +456,28 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
 
     font_ = new QFontComboBox;
     font_->setEditable(false);
-    // Napkin ships no fonts and does not second-guess the platform, so the
-    // first entry is the desktop's own choice rather than a named family.
-    font_->insertItem(0, tr("System default"));
+    // Napkin ships Inter so it reads the same everywhere; the first entry is
+    // that, rather than a named family that might also be installed.
+    font_->insertItem(0, tr("Inter (Napkin's own)"));
     const QString family = fontFamily();
     if (family.isEmpty()) font_->setCurrentIndex(0);
     else                  font_->setCurrentFont(QFont(family));
-    lookForm->addRow(tr("Typeface"), font_);
+    textForm->addRow(tr("Typeface"), font_);
 
     scale_ = new QComboBox;
     for (int i = 0; i < kScaleCount; ++i) {
-        scale_->addItem(kScales[i] == 100 ? tr("100%  (system size)")
-                                          : QStringLiteral("%1%").arg(kScales[i]),
+        scale_->addItem(QStringLiteral("%1%").arg(kScales[i]),
                         kScales[i]);
         if (kScales[i] == textScalePercent()) scale_->setCurrentIndex(i);
     }
-    lookForm->addRow(tr("Text size"), scale_);
+    textForm->addRow(tr("Text size"), scale_);
 
     preview_ = new QLabel;
     preview_->setFrameShape(QFrame::StyledPanel);
     preview_->setAlignment(Qt::AlignCenter);
     preview_->setAutoFillBackground(true);   // it shows the chosen theme's surface
     preview_->setMinimumWidth(260);           // Breeze keeps form fields at their hint
-    lookForm->addRow(tr("Preview"), preview_);
+    textForm->addRow(tr("Preview"), preview_);
 
     // Live, so the choice is made by looking rather than by guessing and
     // reopening the dialog.
@@ -390,9 +487,11 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
     connect(theme_, &QComboBox::currentIndexChanged, this, &SettingsDialog::updatePreview);
     updatePreview();
 
-    layout->addWidget(look);
+    appearancePage->addWidget(look);
+    appearancePage->addWidget(textBox);
+    appearancePage->addStretch();
 
-    // --- lifecycle ----------------------------------------------------------
+    // --- napkins and trash --------------------------------------------------
     auto* life = new QGroupBox(tr("Lifecycle"));
     // A column holding the form and, under it, the notes: QFormLayout does not
     // report a wrapped label's height upward, so notes placed in the form were
@@ -420,7 +519,23 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
         tray_->setEnabled(false);
         tray_->setToolTip(tr("This desktop has no system tray."));
     }
-    lifeForm->addRow(QString(), tray_);
+
+    // Off by default: turning it on is what makes the desktop ask the user to
+    // confirm a shortcut, and nobody should meet that dialog unasked.
+    shortcut_ = new QCheckBox(tr("Paste into Napkin from any app with a keyboard shortcut"));
+    shortcut_->setChecked(QSettings().value(kCaptureShortcut, false).toBool());
+    if (!GlobalShortcut::isSupported()) {
+        shortcut_->setChecked(false);
+        shortcut_->setEnabled(false);
+        shortcut_->setToolTip(tr("This desktop does not offer global shortcuts to applications."));
+    }
+
+    // A shortcut only works while Napkin is running, and without the tray,
+    // closing the window quits it — which is how the first real-desktop test
+    // of the shortcut "did nothing". Asking for the one brings the other.
+    connect(shortcut_, &QCheckBox::toggled, this, [this](bool on) {
+        if (on && tray_->isEnabled()) tray_->setChecked(true);
+    });
 
     auto* trayNote = new QLabel(
         tr("Closing the window then hides Napkin instead of quitting it, so it is "
@@ -433,12 +548,41 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
            "and only what you have already deleted."));
     note->setWordWrap(true);
 
-    lifeColumn->addWidget(trayNote);
+    auto* shortcutNote = new QLabel(
+        tr("Copy something anywhere, press the shortcut (Ctrl+Alt+V unless you choose "
+           "another), and it lands on the napkin you have open — without leaving what "
+           "you are doing. Your desktop asks you to confirm the shortcut the first "
+           "time. It works while Napkin is running, so it keeps Napkin in the tray."));
+    shortcutNote->setWordWrap(true);
+
     lifeColumn->addWidget(note);
-    layout->addWidget(life);
+    napkinsPage->addWidget(life);
+    napkinsPage->addStretch();
+
+    // --- in the background --------------------------------------------------
+    // The tray and the global shortcut are one subject: whether Napkin stays
+    // running to catch what you throw at it.
+    auto* stay = new QGroupBox(tr("Staying ready"));
+    auto* stayColumn = new QVBoxLayout(stay);
+    stayColumn->setSpacing(6);
+    stayColumn->addWidget(tray_);
+    stayColumn->addWidget(trayNote);
+    stayColumn->addSpacing(10);
+    stayColumn->addWidget(shortcut_);
+    stayColumn->addWidget(shortcutNote);
+    backgroundPage->addWidget(stay);
+    backgroundPage->addStretch();
+
+    // Notes are quieter than the controls they explain.
+    for (QLabel* l : {trayNote, shortcutNote, note}) {
+        QPalette pal = l->palette();
+        pal.setColor(l->foregroundRole(), tokens::text(pal, tokens::kTextSecondary));
+        l->setPalette(pal);
+    }
+    nav->setCurrentRow(0);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel);
-    layout->addWidget(buttons);
+    outer->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, this, [this] { save(); accept(); });
 }
@@ -448,10 +592,9 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
 // under the pointer would move the control you were using.
 void SettingsDialog::updatePreview()
 {
-    QFont sample = systemFont();
-    if (font_->currentIndex() > 0) sample.setFamilies({font_->currentFont().family()});
-    const int percent = scale_->currentData().toInt();
-    sample.setPointSizeF(std::max(5.0, systemFont().pointSizeF() * percent / 100.0));
+    const QFont sample = baseFont(font_->currentIndex() > 0 ? font_->currentFont().family()
+                                                            : QString(),
+                                  scale_->currentData().toInt());
     preview_->setFont(sample);
     preview_->setText(tr("The quick brown fox\n0123456789"));
     // Two explicit lines, never wrapped: it was word-wrapped inside a fixed
@@ -464,9 +607,10 @@ void SettingsDialog::updatePreview()
     // control you are using), but a preview that ignored the theme left
     // "Dark" untestable until after Save.
     const int theme = theme_->currentIndex();
-    const QPalette themed = theme == int(Theme::Light) ? buildPalette(false, systemPalette())
+    const QPalette themed = highContrast()             ? systemPalette()
+                          : theme == int(Theme::Light) ? buildPalette(false, systemPalette())
                           : theme == int(Theme::Dark)  ? buildPalette(true, systemPalette())
-                                                       : systemPalette();
+                                                       : buildPalette(systemIsDark(), systemPalette());
     const int index = accent_->currentIndex();
     QPalette p = preview_->palette();
     p.setColor(preview_->backgroundRole(), themed.color(QPalette::Base));
@@ -493,6 +637,7 @@ void SettingsDialog::save()
                                    ? QColor::fromRgba(kAccents[accentIndex].rgb).name()
                                    : QString());
     settings.setValue(kKeepInTray, tray_->isChecked());
+    settings.setValue(kCaptureShortcut, shortcut_->isChecked());
     settings.setValue(kOlder, older_->value());
     settings.setValue(kRetention, retention_->value());
     applyAppearance();

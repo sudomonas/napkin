@@ -132,14 +132,20 @@ int main(int argc, char** argv)
     // --- scrolling the buffer list, thumbnails cold -------------------------
     printf("\nbuffer list\n");
     t.restart();
+    qint64 worstRow = 0;
+    QElapsedTimer rowTimer;
     for (int r = 0; r < model->rowCount(); ++r) {
+        rowTimer.restart();
         view->scrollTo(model->index(r, 0), QAbstractItemView::PositionAtCenter);
         QCoreApplication::processEvents(QEventLoop::AllEvents, 2);
+        worstRow = std::max(worstRow, rowTimer.elapsed());
     }
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     const qint64 coldScroll = t.elapsed();
     row("scroll every row, thumbnails cold", coldScroll, "ms");
     row("  per row", coldScroll / std::max(1, model->rowCount()), "ms");
+    row("  longest freeze during it", worstRow, "ms", 50);
+    thumbs.waitForIdle();
 
     t.restart();
     for (int r = model->rowCount() - 1; r >= 0; --r) {
@@ -181,16 +187,27 @@ int main(int argc, char** argv)
         auto* bar = canvas->verticalScrollBar();
         for (int pass = 1; pass <= 3; ++pass) {
             t.restart();
+            // The longest the window was unresponsive for, which is what a
+            // scroll feels like. Total time alone stopped meaning that once
+            // previews were made on a worker: it is mostly waiting.
+            qint64 worstStep = 0;
+            QElapsedTimer step;
             for (int v = bar->minimum(); v <= bar->maximum(); v += std::max(1, bar->maximum() / 40)) {
+                step.restart();
                 bar->setValue(v);
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 2);
+                worstStep = std::max(worstStep, step.elapsed());
             }
             bar->setValue(bar->minimum());
             settle(40);
             QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            const qint64 scrolled = t.elapsed();
+            thumbs.waitForIdle();
             char label[96];
             snprintf(label, sizeof(label), "  scroll board top to bottom, pass %d", pass);
-            row(label, t.elapsed(), "ms");
+            row(label, scrolled, "ms");
+            row("    longest freeze during it", worstStep, "ms", 50);
+            row("    previews all made after", t.elapsed(), "ms");
             snprintf(label, sizeof(label), "    after pass %d", pass);
             mem(label, rssStart);
         }
@@ -213,7 +230,11 @@ int main(int argc, char** argv)
     mem("after search", rssStart);
 
     printf("\nfootprint\n");
-    row("RSS at end", (rssKb() - rssStart) / 1024, "MB", 120);
+    row("RSS at end", (rssKb() - rssStart) / 1024, "MB");
+    // The application trims the heap itself once preview work goes quiet; this
+    // is what a system monitor shows a couple of seconds after scrolling stops.
+    settle(2500);
+    row("RSS after 2.5 s idle", (rssKb() - rssStart) / 1024, "MB", 120);
     row("QPixmapCache limit", QPixmapCache::cacheLimit() / 1024, "MB");
 
     // Distinguishes memory the application is still holding from memory glibc

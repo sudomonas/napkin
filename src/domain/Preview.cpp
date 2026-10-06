@@ -48,7 +48,8 @@ QString formatBytes(qint64 bytes)
     return QStringLiteral("%1 B").arg(bytes);
 }
 
-BufferPreview derivePreview(const std::vector<Item>& head, int totalCount, int imageCount)
+BufferPreview derivePreview(const std::vector<Item>& head, int totalCount, int imageCount,
+                            const std::vector<Item>& latest, const QString& name)
 {
     BufferPreview p;
     p.itemCount = totalCount;
@@ -60,7 +61,10 @@ BufferPreview derivePreview(const std::vector<Item>& head, int totalCount, int i
         p.thumbs.push_back({i.blobHash, i.mime, i.animated});
     }
 
-    if (head.empty()) return p;
+    if (head.empty()) {
+        p.primary = name;
+        return p;
+    }
 
     // The title comes from the first NOTE, then the first link, then the first
     // image. A napkin that began with a picture or a URL was titled "Image" or
@@ -96,6 +100,24 @@ BufferPreview derivePreview(const std::vector<Item>& head, int totalCount, int i
     const bool allImages = imageCount == totalCount;
     if (totalCount > 1 && !allImages)
         p.secondary = QObject::tr("%1 items").arg(totalCount);
+
+    // A name the user gave is the title, whatever the contents would say.
+    if (!name.isEmpty()) p.primary = name;
+
+    // What was added last, unless that is what the title already says.
+    const ItemId titledBy = name.isEmpty() ? first.id : kNoItem;
+    if (totalCount > 1) {
+        for (const auto& i : latest) {
+            if (i.id == titledBy) continue;
+            if (i.type == ItemType::Text) {
+                if (const auto url = links::soleUrl(i.text)) p.latest = links::displayForm(*url);
+                else p.latest = firstLine(i.text);
+            } else {
+                p.latest = imageLabel(i);
+            }
+            if (!p.latest.isEmpty()) break;
+        }
+    }
 
     // A buffer holding only untitled images still needs a primary line.
     if (p.primary.isEmpty() && p.hasImage()) {

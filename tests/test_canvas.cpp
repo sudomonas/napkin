@@ -3,6 +3,7 @@
 #include "../src/domain/Clock.h"
 #include "../src/media/BlobGc.h"
 #include "../src/ui/Tokens.h"
+#include "../src/ui/TourDialog.h"
 #include "../src/ui/CardFooter.h"
 
 #include <QApplication>
@@ -21,6 +22,8 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
+#include <QToolButton>
+#include <QSettings>
 #include <QSplitter>
 #include <QtTest>
 
@@ -347,6 +350,84 @@ private slots:
         QTest::keyClick(canvas, Qt::Key_Down);
         QCOMPARE(canvas->cursorIndex(), bottom);
         QCOMPARE(canvas->selection().size(), 1);
+    }
+
+    // --- the board is laid out a piece at a time -------------------------------
+    // A 1000-item napkin measured every card before the first one was drawn,
+    // twice. Now only the top is measured up front and the rest while idle —
+    // which is only acceptable if the finished board is exactly the board a
+    // whole-board layout would have made.
+    void aLongNapkinOpensWithOnlyItsTopMeasuredAndFinishesTheSame()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (int i = 0; i < 400; ++i)
+            f.service.appendTo(id, Item::makeText(
+                QStringLiteral("note %1\n%2").arg(i).arg(QString(i % 7 * 30, QLatin1Char('x')))));
+        f.model()->reload();
+        f.select(id);
+
+        const BoardLayout& board = f.canvas()->boardForTest();
+        QVERIFY2(!board.complete(), "the whole board was measured before it was shown");
+        QVERIFY(board.placements().size() < 100);
+        QVERIFY(!f.canvas()->findChildren<TextItemCard*>().isEmpty());   // the top is there
+
+        QTRY_VERIFY_WITH_TIMEOUT(board.complete(), 5000);
+
+        BoardLayout whole;
+        whole.setViewport(f.canvas()->widget()->width());
+        whole.setFont(f.canvas()->findChildren<TextItemCard*>().first()->font());
+        const auto items = f.items.listForBuffer(id);
+        whole.rebuild(items);
+        QCOMPARE(board.placements().size(), whole.placements().size());
+        for (size_t i = 0; i < whole.placements().size(); ++i)
+            QCOMPARE(board.placements()[i].rect, whole.placements()[i].rect);
+        QCOMPARE(board.totalHeight(), whole.totalHeight());
+        QCOMPARE(f.canvas()->widget()->height(), whole.totalHeight());
+    }
+
+    void endReachesTheLastItemBeforeTheBoardHasFinishedMeasuring()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (int i = 0; i < 400; ++i)
+            f.service.appendTo(id, Item::makeText(QStringLiteral("line %1").arg(i)));
+        f.model()->reload();
+        f.select(id);
+        auto* canvas = f.canvas();
+        QVERIFY(!canvas->boardForTest().complete());
+
+        canvas->setFocus();
+        QTest::keyClick(canvas, Qt::Key_End);
+        QCOMPARE(canvas->cursorIndex(), 399);
+        // The oldest item, and its card exists because the board scrolled to it.
+        const auto items = f.items.listForBuffer(id);
+        bool built = false;
+        for (auto* card : canvas->findChildren<TextItemCard*>())
+            if (card->itemId() == items.back().id && !card->isHidden()) built = true;
+        QVERIFY2(built, "End moved the cursor to a card that was never built");
+    }
+
+    void scrollingAheadOfTheMeasuringStillShowsCards()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (int i = 0; i < 400; ++i)
+            f.service.appendTo(id, Item::makeText(QStringLiteral("row %1").arg(i)));
+        f.model()->reload();
+        f.select(id);
+        auto* canvas = f.canvas();
+        QVERIFY(!canvas->boardForTest().complete());
+
+        // Dragging the scrollbar to the far end of an estimated board.
+        auto* bar = canvas->verticalScrollBar();
+        bar->setValue(bar->maximum());
+        const QRect visible(0, bar->value(), canvas->viewport()->width(),
+                            canvas->viewport()->height());
+        int shown = 0;
+        for (auto* card : canvas->findChildren<ItemCard*>())
+            if (!card->isHidden() && card->geometry().intersects(visible)) ++shown;
+        QVERIFY2(shown > 0, "the bottom of the board was empty while it was being measured");
     }
 
     // The board is virtualized: only the visible band has card widgets. Every
@@ -1019,26 +1100,97 @@ private slots:
         QCOMPARE(f.buffers.countTrash(), 1);
     }
 
-    // --- the menu bar --------------------------------------------------------
-    void everyActionIsReachableFromTheMenuBar()
+    // --- the menu -------------------------------------------------------------
+    // The menu bar became one menu behind the header's menu button (2026-10-06
+    // mockup). It must still hold everything the four menus held.
+    static QMenu* appMenu(GuiFixture& f)
+    {
+        auto* button = f.window.findChild<QToolButton*>(QStringLiteral("overflowButton"));
+        return button ? button->menu() : nullptr;
+    }
+
+    void everyActionIsReachableFromTheMenu()
     {
         GuiFixture f;
-        QStringList menus;
-        for (auto* action : f.window.menuBar()->actions()) menus << action->text();
-        QCOMPARE(menus.size(), 4);
-        QVERIFY(menus.join(QLatin1Char('|')).contains(QStringLiteral("File")));
-        QVERIFY(menus.join(QLatin1Char('|')).contains(QStringLiteral("Napkins")));
-        QVERIFY(menus.join(QLatin1Char('|')).contains(QStringLiteral("Trash")));
-        QVERIFY(menus.join(QLatin1Char('|')).contains(QStringLiteral("Help")));
+        QVERIFY2(!f.window.menuWidget(), "a menu bar is back beside the menu button");
+        QMenu* menu = appMenu(f);
+        QVERIFY(menu);
 
+        QStringList sections, items;
+        int listed = 0;
+        for (auto* a : menu->actions()) {
+            if (a->isSeparator()) { if (!a->text().isEmpty()) sections << a->text(); continue; }
+            items << a->text();
+            if (!a->shortcut().isEmpty()) ++listed;
+        }
+        QCOMPARE(sections, (QStringList{QStringLiteral("Napkins"), QStringLiteral("Trash")}));
+        for (const char* needed : {"New napkin", "New note", "Paste", "Undo", "Pin or unpin",
+                                   "Rename…", "Search", "Clean up…", "Show trash", "Empty trash…",
+                                   "Export everything…", "Settings…", "Keyboard shortcuts…",
+                                   "About Napkin", "Quit"})
+            QVERIFY2(items.contains(QString::fromUtf8(needed)), needed);
         // The menu is where a user finds out what the app can do, so every
         // shortcut must be listed rather than only bound.
-        int listed = 0;
-        for (auto* menuAction : f.window.menuBar()->actions())
-            if (auto* menu = menuAction->menu())
-                for (auto* a : menu->actions())
-                    if (!a->isSeparator() && !a->shortcut().isEmpty()) ++listed;
-        QVERIFY2(listed >= 6, qPrintable(QString("only %1 shortcuts listed").arg(listed)));
+        QVERIFY2(listed >= 10, qPrintable(QString("only %1 shortcuts listed").arg(listed)));
+    }
+
+    // Pin, Keep, Calculate and the Trash's undo are a chord or a right-click
+    // away and otherwise invisible, so a tour shows them (user request,
+    // 2026-10-06). It steps forward and back, and once seen it stays seen.
+    // F11 and the menu's Full screen: one action, F11 bound exactly once (a
+    // chord listed twice on an action is ambiguous and fires nothing), and the
+    // check mark follows the window.
+    void fullScreenIsF11AndInTheMenu()
+    {
+        GuiFixture f;
+        auto* action = f.window.findChild<QAction*>(QStringLiteral("fullScreenAction"));
+        QVERIFY(action && action->isCheckable());
+        QCOMPARE(action->shortcuts().count(QKeySequence(Qt::Key_F11)), 1);
+        QVERIFY(f.window.actions().contains(action));        // works without opening the menu
+        QVERIFY(appMenu(f)->actions().contains(action));     // and is listed in it
+
+        f.window.showMaximized();
+        action->trigger();
+        QTRY_VERIFY(f.window.isFullScreen());
+        QVERIFY(action->isChecked());
+        action->trigger();
+        QTRY_VERIFY(!f.window.isFullScreen());
+        QVERIFY(!action->isChecked());
+        QVERIFY2(f.window.isMaximized(), "leaving full screen did not go back to maximized");
+    }
+
+    void theTourWalksThroughAndIsSeenOnce()
+    {
+        GuiFixture f;
+        QSettings().remove(QStringLiteral("onboarding/tourSeen"));
+        QVERIFY(!TourDialog::seen());
+
+        TourDialog tour(&f.window);
+        QVERIFY(tour.stepCount() >= 6);
+        QCOMPARE(tour.currentStep(), 0);
+        QTest::keyClick(&tour, Qt::Key_Left);            // nothing before the first
+        QCOMPARE(tour.currentStep(), 0);
+        QTest::keyClick(&tour, Qt::Key_Right);
+        QCOMPARE(tour.currentStep(), 1);
+        tour.showStep(tour.stepCount() + 5);             // clamped, not out of range
+        QCOMPARE(tour.currentStep(), tour.stepCount() - 1);
+
+        QStringList said;
+        for (auto* l : tour.findChildren<QLabel*>()) said << l->text();
+        for (int i = 0; i < tour.stepCount(); ++i) {
+            tour.showStep(i);
+            for (auto* l : tour.findChildren<QLabel*>()) said << l->text();
+        }
+        const QString all = said.join(QLatin1Char(' '));
+        for (const char* feature : {"Pin", "Keep", "Ctrl+Tab", "Ctrl+F", "Ctrl+Z", "Trash"})
+            QVERIFY2(all.contains(QString::fromLatin1(feature)), feature);
+
+        tour.reject();                                    // skipping counts as seen
+        QVERIFY(TourDialog::seen());
+
+        // And it can always be opened again.
+        QVERIFY(f.window.findChild<QAction*>(QStringLiteral("tourAction")));
+        QVERIFY(f.window.findChild<QPushButton*>(QStringLiteral("tourButton")));
     }
 
     void theTrashMenuAndTheHeaderToggleStayInStep()
@@ -1048,20 +1200,32 @@ private slots:
         auto* toggle = f.window.findChild<QPushButton*>(QStringLiteral("trashToggle"));
         QVERIFY(toggle);
 
+        auto* home = f.window.findChild<QPushButton*>(QStringLiteral("homeSegment"));
+        QVERIFY(home && home->isChecked());
+
         QAction* showTrash = nullptr;
-        for (auto* menuAction : f.window.menuBar()->actions())
-            if (auto* menu = menuAction->menu())
-                for (auto* a : menu->actions())
-                    if (a->text().contains(QStringLiteral("Show trash"))) showTrash = a;
+        for (auto* a : appMenu(f)->actions())
+            if (a->text().contains(QStringLiteral("Show trash"))) showTrash = a;
         QVERIFY(showTrash);
 
-        showTrash->setChecked(true);
+        showTrash->trigger();
+        QCOMPARE(f.model()->mode(), BufferListModel::Mode::Trash);
+        QVERIFY(toggle->isChecked());
+        QVERIFY(!home->isChecked());   // the switch shows one place at a time
+
+        // Pressing the place you are in keeps you there — a second click on
+        // Trash used to un-press it and leave (independent review).
+        toggle->click();
         QCOMPARE(f.model()->mode(), BufferListModel::Mode::Trash);
         QVERIFY(toggle->isChecked());
 
-        toggle->setChecked(false);
+        // Home is the way back, and pressing it again stays home.
+        home->click();
         QCOMPARE(f.model()->mode(), BufferListModel::Mode::Live);
-        QVERIFY(!showTrash->isChecked());
+        QVERIFY(!toggle->isChecked());
+        home->click();
+        QVERIFY(home->isChecked());
+        QCOMPARE(f.model()->mode(), BufferListModel::Mode::Live);
     }
 
     void homeReturnsFromBothTrashAndSearch()
@@ -1074,10 +1238,8 @@ private slots:
         f.window.showTrash(true);
 
         QAction* home = nullptr;
-        for (auto* menuAction : f.window.menuBar()->actions())
-            if (auto* menu = menuAction->menu())
-                for (auto* a : menu->actions())
-                    if (a->text().contains(QStringLiteral("All napkins"))) home = a;
+        for (auto* a : appMenu(f)->actions())
+            if (a->text().contains(QStringLiteral("All napkins"))) home = a;
         QVERIFY(home);
         home->trigger();
 
@@ -1506,8 +1668,8 @@ private slots:
 
         auto* splitter = f.window.findChild<QSplitter*>();
         QVERIFY(splitter);
-        f.window.resize(splitter->sizes().value(0) + f.canvas()->widthForColumns(2)
-                            + splitter->handleWidth(),
+        f.window.resize(tokens::kWindowMargin + splitter->sizes().value(0)
+                            + f.canvas()->widthForColumns(2) + splitter->handleWidth(),
                         760);
         QTest::qWait(50);
 
@@ -1832,7 +1994,7 @@ private slots:
         QVERIFY(!f.buffers.find(id)->inTrash());
         QString said;
         for (auto* l : f.toast()->findChildren<QLabel*>()) if (!l->text().isEmpty()) said = l->text();
-        QCOMPARE(said, QStringLiteral("Napkin restored"));
+        QCOMPARE(said, QStringLiteral("“Packing list for the trip” restored"));
     }
 
 };

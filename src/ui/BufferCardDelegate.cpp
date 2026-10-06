@@ -25,8 +25,6 @@ namespace {
 // identical in value to the ones in Tokens.h. A second copy of a design system
 // is a second thing to forget to change: the file that calls itself the single
 // visual system was not the file this delegate was painting from.
-constexpr int kBorderResting = kCardBorderLight;
-constexpr int kBorderActive  = kCardActive;
 
 QColor dimmed(const QPalette& pal, int alpha = kTextSecondary)
 {
@@ -166,39 +164,35 @@ void BufferCardDelegate::paint(QPainter* p, const QStyleOptionViewItem& option,
     // A buffer past the cutoff is drawn a touch quieter: still perfectly
     // readable, but the eye lands on what is current first.
     const bool older = index.data(BufferListModel::IsOlderRole).toBool();
-    QColor fill = pal.color(QPalette::Base);
-    if (hovered) {
-        // A 2% shift is not a hover state, it is a rounding error. This is
-        // still quiet, but it is actually perceptible.
-        const bool lightTheme = pal.color(QPalette::Window).lightness() > 128;
-        fill = lightTheme ? fill.darker(106) : fill.lighter(128);
-    }
-    p->fillPath(path, fill);
-
-    QColor border = pal.color(QPalette::Text);
-    border.setAlpha(selected ? kBorderActive : kBorderResting);
-    p->setPen(QPen(border, 1));
-    p->drawPath(path);
-
-    // Focus is never signalled by colour alone: the selected card also carries a
-    // solid accent rule down its leading edge (SPEC.md §14).
+    // Rows sit inside the sidebar, which is already a surface, so a row at rest
+    // is just its content on it — no fill, no edge, as the 2026-10-06 mockup's
+    // panel. The chosen row is cut out of the panel in the window's colour, the
+    // same gesture as the header's Home / Trash switch; hover is a tint.
+    // Hover is an edge, not a fill: a hover tint and the chosen row's fill
+    // measured 1.02:1 apart, so the two states could not be told apart.
     if (selected) {
-        QPainterPath clip;
-        clip.addRoundedRect(QRectF(card).adjusted(0.5, 0.5, -0.5, -0.5), kRadius, kRadius);
-        p->save();
-        p->setClipPath(clip);
-        p->fillRect(QRect(card.left(), card.top(), 3, card.height()),
-                    pal.color(QPalette::Highlight));
-        p->restore();
+        p->fillPath(path, pal.color(QPalette::Window));
+    } else if (hovered) {
+        p->setPen(QPen(text(pal, kCardHoverEdge), 1.0));
+        p->drawPath(path);
     }
 
-    // Where the keyboard is, when the list has it: the same dotted accent ring
+    // No rail down the chosen row's leading edge (removed at the user's
+    // request, 2026-10-06). Selection is still not colour alone: the row is cut
+    // out of the panel AND its title is set in a heavier weight (below).
+
+    // Where the keyboard is, when the list has it: the same accent ring
     // the board's cards use. Tabbing into the list showed nothing at all, so a
     // keyboard user could not tell the list had focus (usability test).
-    if (option.state & QStyle::State_HasFocus) {
+    // Only once the keyboard has moved focus: the list takes focus when the
+    // window opens, and a ring around a row nobody tabbed to reads as a
+    // selection outline, not as "the keys act here".
+    const bool keyboard = option.widget && option.widget->window()->testAttribute(Qt::WA_KeyboardFocusChange);
+    if ((option.state & QStyle::State_HasFocus) && keyboard) {
         QPainterPath ring;
-        ring.addRoundedRect(QRectF(card).adjusted(3.5, 3.5, -3.5, -3.5), kRadius - 3, kRadius - 3);
-        p->setPen(QPen(tokens::readableAccent(pal, 1.0), 2.0, Qt::DotLine));
+        ring.addRoundedRect(QRectF(card).adjusted(kFocusInset, kFocusInset, -kFocusInset, -kFocusInset),
+                            kRadius - 3, kRadius - 3);
+        p->setPen(QPen(tokens::readableAccent(pal, 1.0), kFocusWidth));
         p->drawPath(ring);
     }
 
@@ -237,14 +231,23 @@ void BufferCardDelegate::paint(QPainter* p, const QStyleOptionViewItem& option,
         int x = content.left();
         for (int i = 0; i < count; ++i) {
             const QRect box(x, content.top(), size, size);
-            const QPixmap pixmap = (live && i == 0)
-                ? animatedFrame_
-                : thumbnailer_->forBlob(thumbs[size_t(i)].hash, thumbs[size_t(i)].mime,
-                                        size * 2);
+            // Never decoded here: paint runs on the UI thread for every row
+            // scrolled past, and a cold thumbnail cost ~5 ms a row. The view
+            // repaints when the worker delivers it.
+            // Starts empty, not as the animation frame: request() writes only on
+            // success, so a failed thumbnail showed another row's GIF frame.
+            QPixmap pixmap = (live && i == 0) ? animatedFrame_ : QPixmap();
+            Thumbnailer::State state = Thumbnailer::State::Ready;
+            if (!(live && i == 0))
+                state = thumbnailer_->request(thumbs[size_t(i)].hash, thumbs[size_t(i)].mime,
+                                              size * 2, &pixmap);
 
             QPainterPath clip;
             clip.addRoundedRect(QRectF(box), 4, 4);
-            if (pixmap.isNull()) {
+            if (state == Thumbnailer::State::Pending) {
+                // A quiet tile, not the "?" below: nothing is wrong yet.
+                p->fillPath(clip, dimmed(pal, 25));
+            } else if (pixmap.isNull()) {
                 // The blob is gone. Say so visibly rather than drawing nothing —
                 // silently blank content is indistinguishable from empty content.
                 p->fillPath(clip, dimmed(pal, 50));
@@ -264,7 +267,7 @@ void BufferCardDelegate::paint(QPainter* p, const QStyleOptionViewItem& option,
                 // terminal screenshot in the dark theme — still reads as a
                 // picture rather than as a hole (usability test, 2026-09-19).
                 QColor edge = pal.color(QPalette::Text);
-                edge.setAlpha(60);
+                edge.setAlpha(kImageEdge);
                 p->setPen(QPen(edge, 1));
                 p->drawRoundedRect(QRectF(box).adjusted(0.5, 0.5, -0.5, -0.5), 4, 4);
             }
@@ -301,8 +304,8 @@ void BufferCardDelegate::paint(QPainter* p, const QStyleOptionViewItem& option,
 
     // One weight step on one line is the largest "modern and sleek" return
     // available for zero pixels and zero colour. Everything else stays 400.
-    QFont primaryFont = option.font;
-    primaryFont.setWeight(QFont::Medium);
+    const QFont primaryFont = scaledBy(option.font, kTypeBody,
+                                       selected ? QFont::DemiBold : QFont::Medium);
     p->setFont(primaryFont);
     const QFontMetrics pfm(primaryFont);
 
@@ -336,10 +339,31 @@ void BufferCardDelegate::paint(QPainter* p, const QStyleOptionViewItem& option,
 
         p->setFont(timestampFont(option.font));
         p->setPen(dimmed(pal, kTextTertiary));
-        p->drawText(QRect(content.left(), y, content.width(), tfm.height()),
-                    Qt::AlignLeft | Qt::AlignVCenter,
-                    tfm.elidedText(meta.join(QStringLiteral("  ·  ")), Qt::ElideRight,
-                                   content.width()));
+        const QString metaText = meta.join(QStringLiteral("  ·  "));
+        const QString latest = index.data(BufferListModel::LatestRole).toString();
+        if (latest.isEmpty()) {
+            p->drawText(QRect(content.left(), y, content.width(), tfm.height()),
+                        Qt::AlignLeft | Qt::AlignVCenter,
+                        tfm.elidedText(metaText, Qt::ElideRight, content.width()));
+        } else {
+            // The same line, not a third one: rows are one fixed height so a
+            // list of thousands never measures them. Count and age keep their
+            // place at the right; the latest addition takes what is left.
+            // Count and age whole wherever there is room; it is the latest
+            // addition that gives way, down to a stub of it.
+            // (+2: elidedText cuts a string measured to the exact pixel.)
+            const int metaW = std::max(0, std::min(tfm.horizontalAdvance(metaText) + 2,
+                                                   content.width() - 72));
+            const QRect metaBox(content.right() - metaW + 1, y, metaW, tfm.height());
+            p->drawText(metaBox, Qt::AlignRight | Qt::AlignVCenter,
+                        tfm.elidedText(metaText, Qt::ElideRight, metaW));
+            const int room = content.width() - metaW - 12;
+            p->setPen(dimmed(pal, kTextSecondary));
+            p->drawText(QRect(content.left(), y, room, tfm.height()),
+                        Qt::AlignLeft | Qt::AlignVCenter,
+                        tfm.elidedText(QObject::tr("Latest: %1").arg(latest), Qt::ElideRight,
+                                       room));
+        }
     }
 
     p->restore();

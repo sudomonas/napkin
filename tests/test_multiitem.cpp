@@ -8,6 +8,8 @@
 #include <QClipboard>
 #include <QLineEdit>
 #include <QMimeData>
+#include <QInputDialog>
+#include <QTimer>
 #include <QtTest>
 
 using namespace napkin;
@@ -259,7 +261,7 @@ private slots:
 
         f.window.removeItems({gone});
         QCOMPARE(int(f.items.listForBuffer(id).size()), 2);
-        QCOMPARE(toastText(f), QStringLiteral("Item moved to trash"));
+        QCOMPARE(toastText(f), QStringLiteral("Item moved to trash from “Investigate this bug”"));
 
         // The toast expiring must not matter: the item is in a trashed napkin.
         const auto trash = f.buffers.listTrash();
@@ -325,7 +327,7 @@ private slots:
         for (const auto& i : f.items.listForBuffer(id)) all << i.id;
 
         f.window.removeItems(all);
-        QCOMPARE(toastText(f), QStringLiteral("Napkin moved to trash"));
+        QCOMPARE(toastText(f), QStringLiteral("“Investigate this bug” moved to trash"));
         QCOMPARE(f.buffers.countTrash(), 1);
         QCOMPARE(f.buffers.listTrash().front().id, id);          // the napkin itself
         QCOMPARE(int(f.items.listForBuffer(id).size()), 2);      // not an empty shell
@@ -337,7 +339,7 @@ private slots:
         const auto id = seedMixed(f, 1);
         f.select(id);
         f.window.removeItems({f.items.listForBuffer(id)[1].id}, /*cut=*/true);
-        QCOMPARE(toastText(f), QStringLiteral("Item cut"));
+        QCOMPARE(toastText(f), QStringLiteral("Item cut from “Investigate this bug”"));
     }
 
     // --- typing on an empty napkin starts a note --------------------------------
@@ -391,7 +393,7 @@ private slots:
         f.select(id);
         f.trigger("pinAction");
         QVERIFY(f.buffers.find(id)->pinned);
-        QCOMPARE(toastText(f), QStringLiteral("Pinned — it stays at the top"));
+        QCOMPARE(toastText(f), QStringLiteral("Pinned “Investigate this bug” — it stays at the top"));
         f.trigger("undoAction");                     // Ctrl+Z
         QVERIFY(!f.buffers.find(id)->pinned);
 
@@ -566,6 +568,244 @@ private slots:
         QCOMPARE(f.buffers.countLive(), 1);                       // nothing was pasted as an item
     }
 
+
+    // --- offers stack ------------------------------------------------------------
+    // Each delete's offer used to replace the last, so two deletes in quick
+    // succession left only the second undoable.
+    void twoQuickDeletesAreBothUndoableNewestFirst()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (const char* t : {"first", "second", "third"})
+            f.service.appendTo(id, Item::makeText(QString::fromLatin1(t)));
+        f.model()->reload();
+        f.select(id);
+
+        auto removeText = [&](const QString& text) {
+            for (const auto& item : f.items.listForBuffer(id))
+                if (item.text == text) {
+                    f.canvas()->setCursorTo(f.canvas()->indexOf(item.id), Qt::NoModifier);
+                    f.canvas()->deleteSelection();
+                    return;
+                }
+            QFAIL("no such item");
+        };
+        removeText(QStringLiteral("first"));
+        removeText(QStringLiteral("second"));
+        QCOMPARE(f.items.countForBuffer(id), 1);
+        QCOMPARE(f.toast()->offerCount(), 2);
+        QVERIFY2(toastText(f).contains(QStringLiteral("1 more to undo")),
+                 qPrintable(toastText(f)));
+
+        QVERIFY(f.toast()->undoNow());   // the newest: "second"
+        QCOMPARE(f.items.countForBuffer(id), 2);
+        QVERIFY(!toastText(f).contains(QStringLiteral("more to undo")));
+        QVERIFY(f.toast()->undoNow());   // and then the one before it
+        QCOMPARE(f.items.countForBuffer(id), 3);
+        QVERIFY(!f.toast()->undoNow());
+        QVERIFY(!f.toast()->isVisible());
+    }
+
+    void eachOfferRunsOutOnItsOwnClock()
+    {
+        GuiFixture f;
+        auto* toast = f.toast();
+        toast->setVisibleMsForTest(600);
+        int undone = 0;
+        toast->offer(QStringLiteral("older"), [&] { undone = 1; });
+        QTest::qWait(350);
+        toast->offer(QStringLiteral("newer"), [&] { undone = 2; });
+        QCOMPARE(toast->offerCount(), 2);
+
+        // The older one's time is up; the newer one still has some.
+        QTRY_COMPARE_WITH_TIMEOUT(toast->offerCount(), 1, 1000);
+        QVERIFY(toast->isVisible());
+        QVERIFY(toast->undoNow());
+        QCOMPARE(undone, 2);
+    }
+
+    void everyLiveOfferKeepsItsBlobsHeld()
+    {
+        GuiFixture f;
+        auto* toast = f.toast();
+        toast->offer(QStringLiteral("a"), [] {}, {QStringLiteral("aaa")});
+        toast->offer(QStringLiteral("b"), [] {}, {QStringLiteral("bbb")});
+        QCOMPARE(toast->protectedHashes(),
+                 (QSet<QString>{QStringLiteral("aaa"), QStringLiteral("bbb")}));
+        toast->undoNow();
+        QCOMPARE(toast->protectedHashes(), QSet<QString>{QStringLiteral("aaa")});
+        toast->dismiss();
+        QVERIFY(toast->protectedHashes().isEmpty());
+    }
+
+    // A cut finished by a paste withdraws its own Undo — that Undo would put
+    // back what was just pasted — and only its own.
+    void pastingACutWithdrawsOnlyTheCutsOffer()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (const char* t : {"keep me", "delete me", "cut me"})
+            f.service.appendTo(id, Item::makeText(QString::fromLatin1(t)));
+        f.model()->reload();
+        f.select(id);
+
+        auto pick = [&](const QString& text) {
+            for (const auto& item : f.items.listForBuffer(id))
+                if (item.text == text) {
+                    f.canvas()->setCursorTo(f.canvas()->indexOf(item.id), Qt::NoModifier);
+                    return;
+                }
+        };
+        pick(QStringLiteral("delete me"));
+        f.canvas()->deleteSelection();
+        pick(QStringLiteral("cut me"));
+        f.canvas()->cutSelection();
+        QCOMPARE(f.toast()->offerCount(), 2);
+
+        f.trigger("pasteAction");
+        QCOMPARE(f.toast()->offerCount(), 1);
+        QVERIFY(toastText(f).contains(QStringLiteral("moved to trash")));
+        QVERIFY(f.toast()->undoNow());
+        bool back = false;
+        for (const auto& item : f.items.listForBuffer(id))
+            if (item.text == QStringLiteral("delete me")) back = true;
+        QVERIFY2(back, "the earlier delete was not the offer left standing");
+    }
+
+    // The other order: a delete AFTER the cut used to forget the cut, so the
+    // paste never finished it, and undoing everything put back a second copy
+    // of what had been cut and pasted (independent review).
+    void cutThenDeleteThenPasteThenUndoAllLeavesOneCopy()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (const char* t : {"keep me", "delete me", "cut me"})
+            f.service.appendTo(id, Item::makeText(QString::fromLatin1(t)));
+        f.model()->reload();
+        f.select(id);
+        auto pick = [&](const QString& text) {
+            for (const auto& item : f.items.listForBuffer(id))
+                if (item.text == text)
+                    f.canvas()->setCursorTo(f.canvas()->indexOf(item.id), Qt::NoModifier);
+        };
+        pick(QStringLiteral("cut me"));
+        f.canvas()->cutSelection();
+        pick(QStringLiteral("delete me"));
+        f.canvas()->deleteSelection();
+        f.trigger("pasteAction");
+        QCOMPARE(f.toast()->offerCount(), 1);   // the cut is finished; the delete stays
+
+        while (f.toast()->undoNow()) {}
+        int copies = 0;
+        for (const auto& b : f.buffers.listLive(100))
+            for (const auto& item : f.items.listForBuffer(b.id))
+                if (item.text == QStringLiteral("cut me")) ++copies;
+        QCOMPARE(copies, 1);
+    }
+
+    // Through the real list: what was added last shows on the row, and moves
+    // when something newer is added.
+    void theListRowShowsWhatWasAddedLast()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("Groceries")));
+        f.service.appendTo(id, Item::makeText(QStringLiteral("eggs")));
+        f.model()->reload();
+        const auto row = [&] { return f.model()->index(f.model()->rowForId(id), 0); };
+        QCOMPARE(row().data(BufferListModel::PrimaryRole).toString(), QStringLiteral("Groceries"));
+        QCOMPARE(row().data(BufferListModel::LatestRole).toString(), QStringLiteral("eggs"));
+
+        QTest::qWait(5);   // a later modified_at
+        f.service.appendTo(id, Item::makeText(QStringLiteral("milk")));
+        f.model()->invalidatePreview(id);
+        QCOMPARE(row().data(BufferListModel::LatestRole).toString(), QStringLiteral("milk"));
+        QCOMPARE(row().data(BufferListModel::PrimaryRole).toString(), QStringLiteral("Groceries"));
+    }
+
+    // --- an optional name (test user, 2026-10-06) ---------------------------------
+    void aNameIsTheTitleAndClearingItGoesBackToTheContents()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("Groceries")));
+        QTest::qWait(5);
+        f.service.appendTo(id, Item::makeText(QStringLiteral("eggs")));
+        f.model()->reload();
+        const auto row = [&] { return f.model()->index(f.model()->rowForId(id), 0); };
+        const Timestamp before = f.buffers.find(id)->modifiedAt;
+
+        f.window.renameNapkin(id, QStringLiteral("  Weekend   shop "));
+        QCOMPARE(f.buffers.find(id)->name, QStringLiteral("Weekend shop"));   // tidied
+        QCOMPARE(row().data(BufferListModel::PrimaryRole).toString(), QStringLiteral("Weekend shop"));
+        QCOMPARE(f.buffers.find(id)->modifiedAt, before);   // naming is not editing
+        QVERIFY(toastText(f).contains(QStringLiteral("Weekend shop")));
+
+        f.window.renameNapkin(id, QString());
+        QVERIFY(f.buffers.find(id)->name.isEmpty());
+        QCOMPARE(row().data(BufferListModel::PrimaryRole).toString(), QStringLiteral("Groceries"));
+
+        QVERIFY(f.toast()->undoNow());   // back to the name
+        QCOMPARE(row().data(BufferListModel::PrimaryRole).toString(), QStringLiteral("Weekend shop"));
+        QVERIFY(f.toast()->undoNow());   // and to no name
+        QVERIFY(f.buffers.find(id)->name.isEmpty());
+    }
+
+    void aNamedNapkinShowsItsFirstNoteAsTheLatestToo()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("eggs")));
+        QTest::qWait(5);
+        f.service.appendTo(id, Item::makeText(QStringLiteral("Groceries")));
+        f.model()->reload();
+        // Unnamed, the newest ("Groceries") is not the title ("eggs"): shown.
+        const auto row = [&] { return f.model()->index(f.model()->rowForId(id), 0); };
+        QCOMPARE(row().data(BufferListModel::LatestRole).toString(), QStringLiteral("Groceries"));
+        // Named, nothing on it is the title any more, so the newest always shows.
+        QTest::qWait(5);
+        f.service.updateTextItem(id, f.items.listForBuffer(id).back().id, QStringLiteral("eggs!"));
+        f.window.renameNapkin(id, QStringLiteral("Shop"));
+        QCOMPARE(row().data(BufferListModel::LatestRole).toString(), QStringLiteral("eggs!"));
+    }
+
+    void searchFindsANapkinByItsNameAndShowsAllOfIt()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("eggs")));
+        f.service.appendTo(id, Item::makeText(QStringLiteral("milk")));
+        f.seed("unrelated");
+        f.model()->reload();
+        f.window.renameNapkin(id, QStringLiteral("Weekend shop"));
+
+        auto* field = f.window.findChild<QLineEdit*>(QStringLiteral("searchField"));
+        field->setText(QStringLiteral("weekend"));
+        QTRY_COMPARE_WITH_TIMEOUT(f.model()->rowCount(), 1, 2000);
+        QCOMPARE(f.model()->idAt(0), id);
+        f.select(id);
+        QVERIFY2(!f.canvas()->isFiltered(), "a napkin found by name was filtered to nothing");
+        QCOMPARE(f.canvas()->totalCount(), 2);
+    }
+
+    void f2AsksForANameWithTheAutomaticTitleAsTheHint()
+    {
+        GuiFixture f;
+        const auto id = f.seed("Groceries");
+        f.model()->reload();
+        f.select(id);
+        QString hint;
+        QTimer::singleShot(0, [&] {
+            auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+            if (!dialog) return;
+            if (auto* field = dialog->findChild<QLineEdit*>()) hint = field->placeholderText();
+            dialog->setTextValue(QStringLiteral("Shop"));
+            dialog->accept();
+        });
+        f.trigger("renameAction");
+        QCOMPARE(hint, QStringLiteral("Groceries"));
+        QCOMPARE(f.buffers.find(id)->name, QStringLiteral("Shop"));
+    }
 };
 
 QTEST_MAIN(TestMultiItem)

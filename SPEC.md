@@ -118,7 +118,25 @@ over *dangling references* (user-visible corruption).
 
 ## 3. Concepts
 
-**Buffer** — a container of items. The user-facing unit. Never named by the user.
+**Buffer** — a container of items. The user-facing unit. Never *has* to be
+named: its title is derived from what was first put on it (first note, then
+first link, then first image).
+
+> **Amended, 2026-10-06.** This said "never named by the user". A test user
+> asked to be able to name one, and the rule that matters is §1's — the user
+> should never *have* to think what to call something. So a name is optional
+> (F2, or Rename… on the napkin's menu; schema v7, `buffers.name`). It
+> replaces the derived title everywhere a title appears — the list, toasts,
+> Clean up, export folders — and search finds it, ranking a napkin found by
+> name first and showing all of its board. Clearing it goes back to the
+> derived title; renaming never moves a napkin in the list, and is undoable.
+> Acceptance criterion 9 still holds: nothing ever asks for a name.
+>
+> The same user expected the list to show what they added *last*. The title
+> stays the first thing (§20: a title that followed every addition made
+> napkins unrecognisable), and the row's second line now says
+> "Latest: …" — the top of the board, skipping the item the title came from —
+> with the count and age kept whole at the right. Rows stay one fixed height.
 
 **Item** — one piece of captured content. Type is `text` or `image`.
 
@@ -486,7 +504,17 @@ accidental deletion is the single fastest way to lose a user forever.
 > napkin rather than as a second kind of trash entry, so there is still one
 > place to look and one retention rule. The exception is a text card the user
 > *emptied*: nothing is left to recover, so it is discarded as before.
-- An **Undo** toast appears for ~8 seconds after any delete or sweep.
+- An **Undo** toast appears for ~8 seconds after any delete or sweep. Offers
+  **stack**: each lives out its own eight seconds, the toast shows the newest
+  and how many are behind it ("· 1 more to undo"), and Undo / `Ctrl+Z` works
+  back through them newest first. Each names the napkin it happened to. Each
+  offer holds the blobs its undo would need, and the blob sweep leaves the
+  union of every live offer's blobs alone.
+
+> **Corrected, 2026-10-05.** Until then a new offer replaced the one showing:
+> two deletes in quick succession left only the second undoable, and the
+> blobs the first was protecting stayed pinned until the survivor expired.
+> A cut finished by a paste now withdraws only its own offer.
 - Trash is browsable and restorable, and can be emptied on demand — a confirmed,
   irreversible action, which then reclaims the blobs those buffers held.
 - Trash purges items older than 30 days on startup. **This is the only automatic
@@ -650,6 +678,9 @@ which are text and get no exemption. **126** is the floor for a non-text
 affordance carrying meaning; anything at or below 90 is decorative and never the
 sole indicator of a state.
 
+- *Superseded 2026-10-06 (see "The mockup" below): a resting card has no edge;
+  its lighter surface against the window is the edge. The rest of this bullet
+  is the history of why cards have surfaces at all.*
 - **A card is a card.** Own surface (`Base`), own edge, 16px inset, 10px radius.
   The edge is `Text` **α128 light / α108 dark** (3.09:1 and 4.00:1) — the same
   3:1 floor everything else here obeys. An earlier value of α62 was described as
@@ -1082,6 +1113,285 @@ platform palette: one test measures WCAG contrast for every paired role in both
 themes, the other asserts the emphasis tokens actually reached the painting
 role. Each fails if its own fix is reverted — checked by reverting them.
 
+### The design system (draft — phase 1 of the own-look work, 2026-10-06)
+
+**Decision.** Napkin keeps Qt Widgets and gets its own look on every platform:
+its own palette, one widget style everywhere, and a bundled typeface. It does
+**not** change toolkit; §9's reasons — real text editing, IME, AT-SPI — are
+untouched by a styling decision. What stays native: the window frame and title
+bar (a frameless window loses Wayland/KDE snapping and moving), file dialogs,
+the tray, and text input. High-contrast mode overrides Napkin's palette; §14 is
+a hard requirement and an own look does not get to break it.
+
+**Why now.** The content was already Napkin's own: cards, list rows, toast,
+chips and footer paint themselves from `Tokens.h`. What still varies by
+platform is the chrome around it. Rendered offscreen under Breeze and Fusion
+(light and dark, 2026-10-06): the board and list are near-identical; the
+search field (bordered vs flat), the menu bar (mnemonic underlines under Fusion
+only), the splitter handle and a ~9px vertical shift differ; the Settings dialog
+differs almost everywhere — group boxes, combo widths, spin arrows, button
+icons, alignment. The Windows dark-controls fault (`applyStyle`) was the same
+class: a platform style deciding what Napkin looks like.
+
+**Phases.**
+1. *Guidelines* (this section): every value a role, every role a token, the
+   contradictions below resolved. Look-dependent values wait for the user's
+   reference designs (Obsidian / AFFiNE-like) and are marked **OPEN**.
+2. *Own palette by default.* Built from tokens; "follow the system" chooses only
+   light vs dark. Napkin's accent is the default; the presets stay.
+3. *`NapkinStyle`*, a `QProxyStyle` over Fusion on every platform, drawing
+   buttons, fields, combos, spin boxes, check boxes, scroll bars, menus, menu
+   bar, tooltips, group boxes and the splitter from tokens. Replaces both
+   stylesheets ("A stylesheet freezes a widget's palette" already forbids them
+   on themed widgets) and `applyStyle()`'s Windows-only switch.
+4. *Bundled typeface* with system fallback for CJK and emoji. The board measures
+   items by font metrics, so BoardLayout is re-checked, not assumed.
+
+Each phase is rendered light and dark under Breeze and Fusion and on Windows
+CI (`test_native_style`) before it is called done.
+
+**Token families.** Today `Tokens.h` covers text alphas, card geometry, two
+radii and a type-ratio scale. The system needs:
+
+| Family | Today | Target |
+|---|---|---|
+| Colour roles | Two hand-built Breeze-derived palettes in `SettingsDialog.cpp`; badge black/white literal | Named roles — canvas, surface, surface-raised, sidebar, border, text ×3, accent, accent-on, danger, focus — per theme, from which the `QPalette` is *derived*. Values **OPEN** |
+| Alphas | Text 255/170/161, hairline 36, card border 128/108 | Kept and re-measured against the new surfaces; literals 60, 50, 25, 18, 80, 150, 210, 215, 230 folded into roles or justified |
+| Type | Ratios 0.70–2.40 of the system font | Same ratios over a bundled face; weights named (regular, medium, semibold); letter-spacing for the section label and wordmark as tokens. Face **OPEN** |
+| Spacing | 4px scale in part; list uses 14/16/4, toast 16/10/14, dialogs 20/12/10 | One 4px scale; every margin a multiple of it |
+| Radii | 10, 6 | A short scale covering toast 8, thumbnails 4, badge 3, menu items 4 and the focus ring. Values **OPEN** |
+| Strokes | 1px edges, 2px selected, 2px dotted focus ring | Edge, emphasis and focus widths as tokens; the focus ring becomes solid, offset and accent-coloured — the dotted ring is the one dated element in every render |
+| Icons | 13, 14, 16, 18px | Two sizes, stroke proportional as now |
+| Motion | None; flashes 1600ms, toast 8000/1600ms | Durations as tokens. Any animation added later honours reduced motion |
+
+**Contradictions found and resolved** (2026-10-06 inventory, spot-checked;
+fixed the same day). Every visual value they involved now lives in `Tokens.h`:
+
+1. Image edges were a literal α60 in two places while `kHairline` (36) claimed
+   to be the image-edge value. 60 is right — the edge must separate a dark
+   screenshot from a dark card — so it is now `kImageEdge`, and `kHairline` says
+   what it is actually for.
+2. The placeholder alpha was `kTextTertiary` written as 161 → the token.
+3. The Light and Dark palettes were literals in `SettingsDialog` and `textOn()`
+   kept its own copy of two of them → `kLightColors` / `kDarkColors`, from which
+   the `QPalette` is built and `textOn()` reads.
+4. **The one visible change.** List rows drew the light theme's border alpha
+   (128) in both themes and ignored hover; board cards use `cardBorderAlpha()`.
+   Rows now use it too, so dark-theme row edges are α108 (4.00:1), as the board's.
+5. `kRailWidth` was unused; the list drew a literal 3 → the token.
+6. `lightness() > 128` was inlined four times → `isLight()` / `isLightTheme()`.
+7. The list's row metrics (margins 16/4, inset 14, label 36, max width 760,
+   thumbnails 52/38) moved to `Tokens.h` as `kRow*`, with the reason the row is
+   denser than a board card — a decision, recorded, rather than drift.
+8. Font floor: 5.0pt in `SettingsDialog`, 7.0pt in `scaledBy` → one
+   `kMinPointSize` (7.0). It only bites below 7pt, which the size menu never
+   reaches; a corrupt setting now floors at 7 rather than 5.
+9. Focus ring: the list wrote inset 3.5, the board 3 on a box already 0.5 in —
+   the same ring → `kFocusInset` / `kFocusWidth`.
+10. `scaled()` was unused → removed. `kTypeBody` now sets the list's primary
+    line. `readableAccent()` uses `contrastRatio()` instead of its own copy.
+
+*Verified:* offscreen renders before and after, Breeze and Fusion, light and
+dark, main window and Settings — six of eight byte-identical; the two dark main
+windows differ in 2,412 pixels, all on the unselected list rows' edges, nothing
+else. `test_theme` gains `aListRowsEdgeFollowsTheBoardsRuleInBothThemes`, which
+fails in Dark with the old rule restored (`#8b8d8e` vs `#7a7c7d`) — checked by
+restoring it. Full suite passes.
+
+Still literal and still to be folded into roles when the palette is designed:
+alphas 18, 25, 50, 80, 150, 210, 215, 230; the GIF badge's black and white;
+toast, thumbnail and badge radii; icon sizes; flash and toast durations.
+
+### The mockup (2026-10-06): Napkin's own look, implemented
+
+The user supplied `mockup.png` (1280×832, light) and asked for the UI and UX to
+follow it. Measured from the image, then built — phases 2–4 of the design
+system above landed together, because the mockup decided the OPEN values.
+
+**What the mockup decided.**
+- *Colours.* A warm grey desk (#E0DFDD) with lighter surfaces (#F2F1EF) for
+  everything you touch: cards, the sidebar, the search field, the switch, the
+  round buttons. Text is darker than the mockup's (#141312) so tertiary text
+  (α161) still reaches 4.5:1 on the desk as well as on a card. Dark is the same
+  structure: desk #1B1A19, surfaces #262523. `kLightColors` / `kDarkColors`.
+- *No edges at rest.* Cards and sidebar rows are surfaces, not boxes. This
+  overturns the earlier "the edge is a 3:1 affordance" rule for resting cards;
+  the surface step is the boundary, and every *state* still has a shape: hover
+  draws an edge (α70), selection a 2px accent edge plus a wash, editing the
+  accent edge, keyboard focus a solid accent ring. List rows: the chosen row is
+  cut out of the sidebar in the desk colour, plus the accent rail.
+- *Header.* Search on the left, exactly as wide as the sidebar (it follows a
+  dragged splitter); a Home / Trash switch centred on the window; New,
+  Settings and Menu as 38px round buttons. 16px window margin, 24px gaps.
+- *No menu bar.* Every action is in one menu behind the menu button, in
+  sections (top: create and paste; *Napkins*; *Trash*; then export, settings,
+  help, quit). F10 opens it, as on GNOME and KDE; every action with a chord is
+  also the window's own action, so chords never depended on a menu bar. A
+  side effect worth having: Plasma's Global Menu used to move the bar out of
+  the window entirely.
+- *Image cards* hold the picture 6px from the edge with rounded corners; the
+  caption line (format · size · bytes) is gone and its facts are the tooltip.
+  `cardInset()` / `cardChromeHeight(font, image)` are the one rule both the card
+  and `BoardLayout` use — the board measures cards without building them.
+- *Typeface.* Inter, bundled (SIL OFL, `resources/fonts/inter`), four static
+  weights. "Napkin ships no fonts" is no longer true, deliberately. Base size
+  is max(10.5pt, the desktop's) so Windows' 9pt default no longer makes every
+  card smaller than on KDE, and a desktop set larger is still honoured.
+
+**One style, every platform.** `NapkinStyle` (a `QProxyStyle` over Fusion)
+draws the standard controls from the palette, so no stylesheet is needed and
+none remains (the menu bar's was the last). The Windows-only "Fusion in dark
+mode" switch is gone: the platform style never decides the look now.
+Controls are *cut out of what they sit on*: on the desk a field is a surface;
+on a surface (a settings group, the sidebar) it takes the desk colour. One fill
+for both made every Settings field vanish into its group in the first render.
+"Follow the system" now follows the system's light or dark *in Napkin's
+colours*; it used to mean the platform palette, so the same Napkin was Breeze
+on KDE and grey Fusion on Windows.
+
+**High contrast steps aside.** When the OS asks for high contrast (Qt ≥ 6.10
+can say so), Napkin uses the platform's style and palette unmodified. With
+Qt 6.8, which CI builds against, the request cannot be read; that gap is known.
+
+**Found while building it, fixed.**
+- The opening width forgot the new window margin, so the board opened 16px
+  short of its second column (`theWindowOpensWideEnoughForTwoColumns`).
+- The search field's magnifier is a button and announced nothing
+  (`everyControlAnnouncesItself`).
+- Library icons ignored their colour's alpha (`#RRGGBB` written into the SVG),
+  so the empty trash's "quiet" glyph rendered full white in Dark.
+- A ring drew round the first list row at startup, because the list takes
+  focus when the window opens; it now waits for a keyboard focus change.
+- The paste-moves-to-top test could tie with a seed in the same millisecond;
+  its seeds are an hour old now.
+
+*Verified:* offscreen renders, light and dark, of the main window, menu,
+trash and Settings, compared against the mockup by eye and by sampled
+colour. New or rewritten tests — `aListRowIsPartOfTheSidebarUntilChosen`,
+`theMenuFollowsNapkinsThemeNotTheDesktops`, `everyActionIsReachableFromTheMenu`,
+`everyMenuActionIsReachableByKeyboard`, the Home / Trash switch in
+`theTrashMenuAndTheHeaderToggleStayInStep`. The first two were checked to fail
+with their behaviour reverted (row filled with the surface: `#f2f1ef` for
+`#e0dfdd`; menu panel in the desk colour); the others were not break-tested.
+Full suite passes.
+
+**Independent review, same day.** A separate reviewer rendered states the
+first pass had not — hover, keyboard focus, a control gallery, right-to-left,
+200% text, dialogs, popups — and measured them. Fixed:
+- *A crash.* The scroll-bar thumb was `clamp(len, 36, barLength)`; under 36px
+  the bounds reverse, which is undefined and aborts under
+  `_GLIBCXX_ASSERTIONS` — which makepkg sets and our own builds did not. The
+  class fix: **every non-MSVC build now defines `_GLIBCXX_ASSERTIONS`**, so the
+  tests run the checks the shipped binary runs. `aShortScrollBarStillHasAThumbInsideIt`
+  aborts on the old line with assertions on (checked). *Corrected claim:* the
+  review said the thumb also came out longer than the bar without assertions;
+  with libstdc++ it does not (min(max(v,lo),hi) gives the bar's length) — the
+  defect is the undefined call, not a visible one.
+- *Keyboard focus was invisible* wherever Qt asks the style for a focus rect —
+  the Sweep dialog's list (which has no selection, so the ring was the only
+  cue), radios, plain tool buttons. They get the solid accent ring now.
+- *Selected rows in dialog lists were unreadable in Dark*: a tinted fill with
+  the text still in `HighlightedText` (chosen for an opaque fill).
+- *Hover and selection in the sidebar measured 1.02:1 apart.* Hover is an edge
+  now; selection keeps its fill, and its rail is 4px in the readable accent.
+- *`readableAccent` was 3:1 against Base only*; a selected card's edge sits half
+  on the window, where it measured 2.77:1. It now meets 3:1 against both.
+- *The Home / Trash switch* let a second click on Trash leave the trash (now an
+  exclusive group), and said "chosen" by a 1.18:1 fill alone (now also weight
+  and an edge). "Show trash" in the menu is a command, not a checkbox.
+- *The menu's active item* was a 1.14:1 tint — the menu is now the keyboard's
+  only route to everything — and is the accent with its own text colour.
+- *A focused autoDefault button* (Tab to Cancel) was painted as the primary.
+- *Fixed sizes ignored the text-size setting*: header controls, segments,
+  icons and the check box grow with the font; the trash bar stacks.
+- *Contrast:* unchecked check box edge 2.69 → 3.75:1; scroll thumb at rest
+  raised; menu edge stronger now that Breeze's shadow is gone.
+- *Insets, RTL, popups:* field text 12px from the edge; combo, group box and
+  horizontal scroll bar mirror right to left; the combo's list is a rounded
+  surface like the menu; header spacing moved to the mockup's (32/32 against
+  its 34/35); the search field no longer jumps from 320 to 344px when the
+  first napkin appears.
+
+Known and not fixed, deliberately or for now:
+- The board's right margin is ~26px against the mockup's 16: `ItemCanvas`
+  reserves the scroll bar's width so the layout does not jump when it appears.
+- Below ~940px wide the switch drifts off centre (the search field cannot
+  shrink below the sidebar's width).
+- Image cards keep a hairline edge the mockup lacks — it is what keeps a dark
+  screenshot from reading as a hole in a dark card.
+- An image's file name is now only in its tooltip, which the keyboard cannot
+  reach; showing it in the footer when it exists is the likely fix.
+- Text-only list rows keep their text at the top of a row sized for a
+  thumbnail.
+- Untested here: X11 without a compositor (rounded popups would show black
+  corners), fractional HiDPI (half-pixel hairlines may blur), checkable group
+  boxes and split-button tool buttons (neither exists yet), and the switch's
+  accessible role (two toggle buttons, not a tab list).
+
+**First use by the user, same day, and what changed.**
+- *The search field could not be clicked into* — only Ctrl+F reached it. Naming
+  the magnifier for screen readers looped over the search action's associated
+  objects and set `NoFocus` on each; the field itself is one of them. Ctrl+F
+  calls `setFocus()`, which ignores the policy, so every keyboard test passed.
+  Now only the glyph's button is touched, and
+  `theSearchFieldTakesFocusFromAClickAndFromTab` fails if the field loses click
+  or Tab focus again (checked by reintroducing the loop).
+- *No accent rail on the chosen napkin* (asked for). Selection is still not
+  colour alone: the row is cut out of the sidebar and its title is set
+  semibold. `aListRowIsPartOfTheSidebarUntilChosen` samples where the rail was.
+- *No trash bar in the sidebar* (asked for). Its note and "← Back to napkins"
+  answered a test user who did not see the old one-button Trash toggle as an
+  exit; the Home half of the switch is that exit now, always in view. The
+  retention period moved to the Trash segment's tooltip.
+- *The glossy trash-can picture is back* on the empty trash (asked for). The
+  flat glyph that replaced it and its loader are gone.
+- *Settings has two panes*, as KDE's System Settings: a page list in a surface
+  (Appearance; Napkins & trash; In the background) and the chosen page, each
+  with its groups as surfaces. The tray and the global shortcut share a page —
+  they are one subject, whether Napkin stays running. The dialog is still
+  exactly the size of its largest page.
+- *Theme is in the main menu* (Follow the system / Light / Dark), applied at
+  once with no dialog; `SettingsDialog::setTheme()` is the one way both the menu
+  and the dialog store it.
+
+**Second round of the user's notes, same day.**
+- *Padding.* Text buttons outside dialogs are pills, cut out of what they sit
+  on, with 16px from the words to the rounded ends (`kPillPadX`): "Empty
+  trash…" had 7px, from Fusion's own margin. The toast's and the clean-up
+  nudge's flat words-as-buttons are pills now; the nudge's ✕ is a round
+  target. Cards and the toast are marked as surfaces, so a control inside one
+  (a link chip's Open) is no longer drawn in the card's own colour. A focus
+  ring around a radio's or a label's text stands 4px off the letters.
+- *The empty states sit at the middle of the window*: the page gets the window
+  margin on its right too (it had it on the left only, putting the centre 8px
+  off), and a 2:3 stretch above and below lifts the block to the window's
+  middle rather than the page's, which is lower by the header.
+- *Never "Select a napkin".* Whenever the list has napkins and none is open,
+  the latest opens — the most recently changed, or in the trash the most
+  recently deleted. `selectLatestIfNone()` follows every model reset (a reset
+  clears the current row silently, and a deferred re-sort reloads from inside
+  the model where MainWindow cannot see it; Qt's list view then picked its
+  *first* row on focus, which for a pinned napkin is not the latest — the test
+  caught exactly that). `theBoardNeverWaitsForASelection`.
+- *A welcome tour* (`TourDialog`), because Pin, Keep, Calculate, the Trash's
+  undo and Older are each a chord or a right-click away and otherwise
+  invisible. Six steps — what Napkin is for; paste and copy; Pin and Keep;
+  calculating a line; search; the trash, undo, Older and Clean up — plus a
+  seventh on the global shortcut only where the desktop can do it. Each has a
+  drawn miniature in the theme's colours. It opens once on the first launch
+  (from `main()`, so no test window meets a modal dialog), and is in the menu
+  ("Welcome tour") and on the start page ("Take the tour"). Every claim in it is
+  a tested feature; `theTourWalksThroughAndIsSeenOnce` checks the features are
+  named and that skipping counts as seen.
+- *Full screen* (asked for): F11, and *Full screen* in the menu, checked while
+  on; leaving it returns to maximized if the window was. F11 is added to the
+  platform's own binding only when that lacks it — measured: under KDE's
+  platform theme `QKeySequence::FullScreen` is Ctrl+Shift+F alone, while on
+  other platforms it already includes F11, and one chord listed twice on an
+  action is ambiguous and fires nothing. `fullScreenIsF11AndInTheMenu`.
+- *"The trash can is empty"* on the empty trash (asked for).
+
+
 ### The three empty screens
 
 An empty list is not one state, it is three, and they mean different things:
@@ -1152,6 +1462,51 @@ Those are in tension: the debounce window *is* the loss window. Concretely:
 - **Debounce 300 ms, hard max-delay 2 s.** Continuous typing still commits at
   least every two seconds.
 - **Force flush** on collapse, buffer switch, window blur, and close.
+- **Large notes save in the background while you type** (2026-10-05). Saving
+  is linear in the note — SQLite rewrites the row and FTS5 tokenises the old
+  text out and the new text in: 139 ms for 10 MB, 689 ms for 50 MB — and the
+  max-delay made that a regular freeze mid-typing. A *timed* autosave of notes
+  that already have rows, over 256 K characters, is written by
+  `BackgroundSaver` on a second connection to the same file, one job at a time,
+  in order. **Every forced flush first waits for it** and then writes
+  synchronously, so collapse, switch, blur and close still mean "the text has
+  landed" exactly as before. A card is marked saved only when the write it
+  asked for has landed *and* it has not been edited since (an edit counter
+  travels with the save). The guarantees above are unchanged: the loss window
+  is still the 2 s max-delay plus the time one write takes.
+
+Measured, sustained typing (a key every 60 ms for 6 s, autosave running):
+
+| Note | Each keystroke, before → after | Worst stall while typing, before → after |
+|---|---|---|
+| 1 MB | 6 ms → <1 ms | 12 ms → 1 ms |
+| 10 MB | 46 ms → 1 ms | 148 ms → 17 ms |
+| 50 MB | 233 ms → 8 ms | 845 ms → 134 ms |
+
+The keystroke cost was three whole-note copies per key: the edit check compared
+the full text to tell typing from re-highlighting, the accessible name read the
+whole note for its first line, and the board re-measured a card that is drawn
+at maximum height whatever it says. Now a change that alters the length is an
+edit without comparing anything (formatting never does); only a same-length
+change on a card not already edited still compares. What is left at 50 MB is
+the copy autosave has to hand to the worker.
+
+> **Corrected after independent review, same day.** The first version of this
+> was measured faster and lost text four ways, each demonstrated by a probe:
+> a same-length edit (typing over a selection) on an already-edited card was
+> ignored, so a background save of the older text landed and marked it saved;
+> `Autosave::flushNow()` did nothing once its text had been handed to the
+> worker, so pasting an image or losing focus mid-save did not wait; the board
+> rebuilt its cards from rows older than the screen and threw away their
+> unsaved state; and a font change mid-edit rebuilt a long note from a copy the
+> keystroke fix had stopped refreshing. Now: any change to an edited card
+> counts; `flushNow()` always waits; a rebuild **carries** every unsaved card's
+> text and unsaved state over to its new card (`ItemCanvas::carried_`); and
+> edit counts are unique app-wide, so a late save can never match a different
+> card. Each fix has a test, driven through the real autosave timers with a
+> third connection holding the write lock to keep a save in flight, that fails
+> when the fix is removed — except the app-wide counter, which carry-over has
+> made unreachable by any path found; it is kept as a second guard.
 
 ### Image write ordering
 
@@ -1163,6 +1518,18 @@ and on delete, commit the row removal *before* unlinking. A reconciliation sweep
 at startup quarantines blobs with no referencing row, and flags rows whose blob
 is missing (never silently — the item renders as a broken-image placeholder that
 the user can remove).
+
+The sweep runs in two halves (`BlobSweeper`, 2026-10-05). Walking the blob
+and thumbnail directories — the part that grows with the store — runs on a
+worker and only lists files. **Deciding** runs back on the UI thread, against
+the references as they are at that moment, and only about files the walk saw.
+It must not decide from a snapshot: content addressing means pasting an image
+that is already on disk reuses the file, so an orphan the walk listed can be
+referenced again before the walk finishes, and deleting it then loses the
+picture. Blobs are written on the UI thread, synchronously, so no write is
+half-done while the decision runs. `tests/test_images.cpp` sleeps the UI thread
+*without* running its event loop to make that interleaving deterministic, and
+fails both a worker that deletes and an owner that decides from a stale set.
 
 ---
 
@@ -1220,9 +1587,27 @@ napkin/
 `domain/` may depend on QtCore but never on QtWidgets, so the entire model and
 every invariant is testable headless in CI.
 
-**Single-instance enforcement** (`QLocalServer` lock): two processes on one
-SQLite file is easy to forget and painful to debug. A second launch raises the
-existing window.
+**Single-instance enforcement**: two processes on one SQLite file is easy to
+forget and painful to debug. Who owns the data directory is decided by a lock
+file held for the life of the process (`QLockFile`, which takes a native lock
+and recognises a dead owner's lock as stale), checked **before the database is
+opened**. The local socket only carries the "raise your window" knock; a second
+launch knocks for up to three seconds, and if the owner never answers it says
+so in a dialog and exits without touching anything.
+
+> **Corrected, 2026-10-05.** The socket used to *be* the lock. Two launches at
+> once could both find nobody listening, and the loser of the race to listen
+> deleted the winner's socket and listened in its place: two Napkins on one
+> database. A primary slower than 300 ms to answer was taken for dead the same
+> way. And a second launch opened the database and ran migrations before it
+> ever checked. `tests/test_single_instance.cpp` holds the lock in a separate
+> process and SIGKILLs it, to show a crash never locks the next launch out.
+>
+> Running the real binary against a deep test profile then found that a Unix
+> socket path longer than `sockaddr_un` allows (108 bytes on Linux) made
+> `listen()` fail, so the primary could never be reached. Such a path now puts
+> the socket in `$XDG_RUNTIME_DIR` (0700, per user), named after a hash of the
+> data directory.
 
 ### Data locations
 
@@ -1340,6 +1725,36 @@ start), and the first scroll pays 920px thumbnail generation on the UI thread,
 about 108 ms per image. That first pass rendered 190 of the 500 images in
 20.5 s; touching all of them would be roughly a minute of frozen UI. The
 realistic shape never shows this because no single buffer is large enough.
+
+### Measured again, 2026-10-05: nothing heavy on the UI thread
+
+Same corpus, same machine. `bench_load` now also reports the **longest single
+freeze** during each scroll — total scroll time stopped meaning "frozen" once
+the work moved to workers, because most of it is now waiting.
+
+| | Realistic shape | Pathological (1 buffer, 1000 items) |
+|---|---|---|
+| Cold start to interactive | 253 ms | **249 ms** (was 913) |
+| Board scroll, first pass: longest freeze | 16 ms | **13 ms** (was a 20 s pass) |
+| … every preview made, in the background | 0.8 s | 4.3 s |
+| List scroll, thumbnails cold: longest freeze | 15 ms | — |
+| RSS 2.5 s after scrolling stops | 46 MB | 74 MB (was 1035) |
+
+What changed: board previews and list thumbnails are made on two worker
+threads and delivered to cards that already hold a placeholder of the picture's
+exact final size (`Thumbnailer::request`); the board is laid out a piece at a
+time — only what the viewport needs before the first paint, the rest in 6 ms
+idle slices (`BoardLayout::placeThrough/placeFor`); and the heap is trimmed
+once preview work goes quiet. Cold start's remaining ~200 ms is the harness's
+own settle time, identical for both shapes.
+
+> **Corrected.** The section above attributes "332 ms of the 913 ms cold
+> start" to measuring item heights. Timing the pieces showed measuring the
+> whole 1000-item board costs ~126 ms; cold start was *two* full measurements
+> — one at the width the window was built at and again at the width it was
+> shown at — plus every visible image card decoding its 920 px preview on the
+> UI thread, 20–140 ms each. Fixing only the measurement would have left most
+> of it.
 
 ---
 
@@ -1541,6 +1956,12 @@ headless GUI tests driving the real widget tree (`tests/test_editing.cpp`):
 - **The list does not re-sort while a card is expanded.** Autosave bumps
   `modified_at` continuously, so a naive reload would yank the card you are
   typing into to the top. Reloads are deferred and applied on collapse.
+- **A paste into an existing napkin moves it to the top of RECENT at once.**
+  A paste is a discrete act, not typing, so the freeze above does not apply.
+  *Corrected 2026-10-06:* pasting (Ctrl+V, a drop, or the global shortcut)
+  refreshed the card's time but never re-sorted, so the napkin stayed where it
+  was — even under OLDER, claiming "just now" — until some unrelated change
+  reloaded the list.
 
 *Design change during implementation:* `Ctrl+N` is a `QAction`, not a bare
 `QShortcut`. A headless window is never active, so key-chord delivery cannot be
@@ -2049,28 +2470,36 @@ not fail.**
 
 | Copying a lone image whose blob was gone put the literal `[image]` on the clipboard and reported "Copied"; **cutting it did the same and deleted the item anyway** | high | fixed — one `putSelectionOnClipboard()` for both verbs; a cut that cannot copy removes nothing (§7) |
 
+| *2026-10-05:* the window swept `paths::thumbsDir()` — the **real profile's** thumbnail cache — so any test that emptied the trash deleted every real thumbnail its own temporary database did not reference | high | fixed — the sweep uses the `Thumbnailer`'s own directory |
+| *2026-10-05:* a second launch opened and migrated the database before the single-instance check; two simultaneous launches could both run; a slow primary was taken for dead | high, data | fixed — a lock file decides, before the database is opened (§10) |
+| *Independent review, 2026-10-05:* the new lock alone would have started a second Napkin beside a running 0.1.7 or earlier, which holds no lock — and deleted its socket | high, data | fixed — even holding the lock, it knocks on the socket before taking it over |
+| *Review:* cut, then delete, then paste: the delete forgot the pending cut, so with stacked offers undoing everything put back a second copy of what was cut | medium | fixed — only a new cut replaces a pending one |
+| *Review:* a missing list thumbnail drew whichever GIF frame was playing in another row | low | fixed |
+| *Review:* previews 0.1.7 had scaled UP were still served — blurry, and 3 px off the placeholder | low | fixed — a cached preview larger than its source is remade |
+| *Review:* the list-thumbnail test claimed a repaint it never checked | — | fixed — it counts the paint |
+| *Test user, 2026-10-06:* expected the list to show the latest addition; asked to name napkins | low | done — "Latest: …" on the row's second line; optional names (§3) |
+| *Test user, 2026-10-06:* wanted everything copied to land in Napkin without switching to it | — | decided: not a clipboard history (§1), and Wayland serves the clipboard only to a focused window (§17); the global capture hotkey is the answer, next |
+| *Test user, 2026-10-06:* could not find the way out of the trash — tried the mouse's Back button, then hunted, before seeing the "Trash" button was a toggle | medium | fixed — the trash list opens with "← Back to napkins" and the retention note; the mouse Back button and Alt+Left also leave (Alt+Left only while in the trash) |
+
+**Fixed 2026-10-05**, from the list that stood here: the lightbox pages
+through a napkin's images with ←/→ (Home/End to the ends, no wrap); a long
+note's card holds only its first `kMeasureLimit` characters until it is edited,
+and `text()` still answers with all of it (§7); the blob sweep walks the store
+on a worker and decides on the UI thread (§8); the single-instance guard is a
+real lock (§10); undo offers stack and name the napkin (§6).
+
 **Known and not yet fixed**, carried forward honestly:
 
-- The lightbox does not page across a buffer's images with ←/→; each image is
-  opened individually from the expanded card.
-- Opening a napkin grows with the size of its notes: a card's editor holds
-  the whole text, so it can be edited, and `setPlainText` is linear — measured
-  at 3 ms for 36 KB, 37 ms for 400 KB and 135 ms for 1.2 MB. The board's
-  *measuring* is capped and flat (1–2 ms at any size); it is the editor.
-  Loading only what a clipped card shows, and the rest on first edit, would fix
-  it. Found by a test that used to time the whole of opening against a fixed
-  250 ms: flaky under load, and too loose to notice the growth.
-- `reconcileBlobs()` runs synchronously on the UI thread, so a very large blob
-  store will stall the window during *Empty trash*.
-- The multi-instance guard is still best-effort; a real `flock` on the data
-  directory would be the correct mutex.
-- One **offer** still replaces another rather than stacking, and does not name
-  the buffer: two deletes in quick succession leave only the second undoable,
-  and the blobs the first was protecting stay pinned until the survivor expires.
-  (An *informational* message no longer does this — it is held in front of a
-  live offer and puts it back; see §7.)
-- The lightbox's ←/→ gap above is now the only place arrow keys do not do the
-  obvious thing; the board itself walks by geometry (§7).
+- Opening a long note **for editing** still pays `setPlainText` on the whole
+  of it — 135 ms for 1.2 MB, 0.5 s for 10 MB — once, at the moment editing
+  starts. Inherent to `QPlainTextEdit`; only a chunked or custom editor would
+  remove it. So does every *forced* save of one (leaving the card, switching
+  napkins, the window losing focus): those must have landed before they return.
+- Peak memory while the board's previews are being made: decoding hundreds of
+  multi-megapixel images on two workers grows glibc's arenas to ~550 MB before
+  the idle trim hands it back (§12). Live data stays under 60 MB throughout.
+- A thumbnail written by a worker for an image whose row is purged *while* the
+  write is in flight survives until the next sweep (at the next launch).
 
 ---
 

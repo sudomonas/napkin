@@ -101,11 +101,15 @@ bool Exporter::writeBuffer(BufferId id, const QString& parentDir, Result& result
     // Named from the first text in it, so a folder of exports is browsable
     // without opening anything. The id keeps two similar buffers apart.
     QString label;
-    for (const Item& item : contents)
+    if (const auto buffer = buffers_.find(id); buffer && !buffer->name.isEmpty())
+        label = slug(buffer->name, 40);
+    for (const Item& item : contents) {
+        if (!label.isEmpty()) break;
         if (item.type == ItemType::Text && !item.text.trimmed().isEmpty()) {
             label = slug(item.text, 40);
             break;
         }
+    }
     if (label.isEmpty()) label = QStringLiteral("images");
 
     const QString dir = uniqueDir(parentDir, QStringLiteral("%1-%2")

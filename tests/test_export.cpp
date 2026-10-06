@@ -11,6 +11,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
+#include <QFileInfo>
 #include <QtTest>
 
 using namespace napkin;
@@ -63,6 +64,13 @@ private slots:
         QVERIFY2(result.ok, qPrintable(result.error));
         QVERIFY(result.problems.isEmpty());
         QCOMPARE(result.items, 2);
+        QVERIFY(QFileInfo(result.rootDir).fileName().endsWith(QStringLiteral("deploy-notes-for-friday")));
+
+        // A napkin with a name of its own is exported under that name.
+        buffers.setName(id, QStringLiteral("Friday release"));
+        const auto named = exporter.exportBuffer(id, outDir.path());
+        QVERIFY2(QFileInfo(named.rootDir).fileName().endsWith(QStringLiteral("friday-release")),
+                 qPrintable(named.rootDir));
         QCOMPARE(result.images, 1);
 
         const QStringList written = QDir(result.rootDir).entryList(QDir::Files, QDir::Name);

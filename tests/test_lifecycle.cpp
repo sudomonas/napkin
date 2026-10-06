@@ -3,6 +3,7 @@
 #include <QStackedWidget>
 #include "../src/ui/EmptyStateView.h"
 #include "GuiFixture.h"
+#include "../src/domain/Clock.h"
 #include <QtTest>
 
 using namespace napkin;
@@ -257,6 +258,98 @@ private slots:
 
         QCOMPARE(f.model()->rowCount(), 1);
         QCOMPARE(f.window.findChild<QStackedWidget*>()->currentIndex(), 0);
+    }
+
+    // A test user could not find the way out of the trash: they tried the
+    // mouse's Back button, then hunted, before seeing the Trash button was a
+    // toggle (2026-10-06). The way out is now the Home half of the switch, in
+    // view the whole time; the sidebar bar that said so was removed at the
+    // user's request.
+    void theTrashSaysHowToLeaveAndLeavingWorks()
+    {
+        GuiFixture f;
+        f.seed("still here");
+        f.service.trash(f.seed("thrown away"));   // an empty trash shows its own page
+        f.model()->reload();
+        auto* toggle = f.window.findChild<QPushButton*>(QStringLiteral("trashToggle"));
+        auto* home = f.window.findChild<QPushButton*>(QStringLiteral("homeSegment"));
+        QVERIFY(toggle && home);
+        QVERIFY(!f.window.findChild<QPushButton*>(QStringLiteral("leaveTrashButton")));
+
+        toggle->click();
+        QCOMPARE(f.model()->mode(), BufferListModel::Mode::Trash);
+        QVERIFY2(home->isVisibleTo(&f.window), "the trash does not show the way out");
+        QVERIFY2(toggle->toolTip().contains(QStringLiteral("days")),
+                 "how long the trash keeps things is said nowhere");
+        home->click();
+        QCOMPARE(f.model()->mode(), BufferListModel::Mode::Live);
+        QVERIFY(!toggle->isChecked());
+    }
+
+    // "Select a napkin to see what is on it" is a screen with nothing to do,
+    // and the user asked never to land there: whenever the list has napkins
+    // and none is open, the latest opens.
+    void theBoardNeverWaitsForASelection()
+    {
+        GuiFixture f;
+        const auto older = f.seed("older");
+        f.buffers.setModifiedAt(older, nowMs() - 3600 * 1000);
+        const auto pinned = f.seed("pinned, so first in the list");
+        f.buffers.setPinned(pinned, true);
+        f.buffers.setModifiedAt(pinned, nowMs() - 7200 * 1000);
+        const auto latest = f.seed("latest");
+        f.model()->reload();
+
+        // The latest by time, not merely the top row (a pinned napkin is on top).
+        f.view()->selectionModel()->clearCurrentIndex();
+        QTRY_VERIFY(f.canvas()->showingANapkin());
+        QCOMPARE(f.model()->idAt(f.view()->currentIndex().row()), latest);
+
+        // Deleting the open napkin opens the next latest, not a blank board.
+        f.window.trashRow(f.view()->currentIndex().row());
+        QTRY_VERIFY(f.canvas()->showingANapkin());
+        QCOMPARE(f.model()->idAt(f.view()->currentIndex().row()), older);
+
+        // The trash opens on what was deleted last.
+        f.window.findChild<QPushButton*>(QStringLiteral("trashToggle"))->click();
+        QTRY_VERIFY(f.canvas()->showingANapkin());
+        QCOMPARE(f.model()->idAt(f.view()->currentIndex().row()), latest);
+    }
+
+    void theMouseBackButtonLeavesTheTrash()
+    {
+        GuiFixture f;
+        f.seed("still here");
+        f.service.trash(f.seed("thrown away"));   // an empty trash shows its own page
+        f.model()->reload();
+        f.window.findChild<QPushButton*>(QStringLiteral("trashToggle"))->click();
+        QCOMPARE(f.model()->mode(), BufferListModel::Mode::Trash);
+
+        // Pressed over the list, which takes presses itself.
+        QTest::mouseClick(f.view()->viewport(), Qt::BackButton);
+        QCOMPARE(f.model()->mode(), BufferListModel::Mode::Live);
+        QVERIFY(!f.window.findChild<QPushButton*>(QStringLiteral("trashToggle"))->isChecked());
+
+        // And it does nothing on the ordinary list.
+        QTest::mouseClick(f.view()->viewport(), Qt::BackButton);
+        QCOMPARE(f.model()->mode(), BufferListModel::Mode::Live);
+    }
+
+    void altLeftLeavesTheTrashAndOnlyTheTrash()
+    {
+        GuiFixture f;
+        f.seed("still here");
+        f.service.trash(f.seed("thrown away"));   // an empty trash shows its own page
+        f.model()->reload();
+        auto* back = f.window.findChild<QAction*>(QStringLiteral("leaveTrashAction"));
+        QVERIFY(back);
+        QCOMPARE(back->shortcut(), QKeySequence(QKeySequence::Back));
+        QVERIFY2(!back->isEnabled(), "Alt+Left is taken away from the ordinary list");
+        f.window.findChild<QPushButton*>(QStringLiteral("trashToggle"))->click();
+        QVERIFY(back->isEnabled());
+        back->trigger();
+        QCOMPARE(f.model()->mode(), BufferListModel::Mode::Live);
+        QVERIFY(!back->isEnabled());
     }
 };
 

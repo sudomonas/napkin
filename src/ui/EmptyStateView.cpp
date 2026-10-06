@@ -26,8 +26,12 @@ int textColumn(const QFont& font)
 EmptyStateView::EmptyStateView(QWidget* parent) : QWidget(parent)
 {
     auto* outer = new QVBoxLayout(this);
-    outer->setAlignment(Qt::AlignCenter);
+    outer->setAlignment(Qt::AlignHCenter);
     outer->setSpacing(0);
+    // A little above the middle of the page, so the block sits at the middle of
+    // the WINDOW: the page starts below the header, and centred in the page
+    // alone it read as sagging low (user report, 2026-10-06).
+    outer->addStretch(2);
 
     art_ = new QLabel;
     art_->setAlignment(Qt::AlignCenter);
@@ -61,6 +65,7 @@ EmptyStateView::EmptyStateView(QWidget* parent) : QWidget(parent)
     action_->setAccessibleName(tr("Leave this view"));
     connect(action_, &QPushButton::clicked, this, &EmptyStateView::actionTriggered);
     outer->addWidget(action_, 0, Qt::AlignHCenter);
+    outer->addStretch(3);
 
     applyPalette();
 }
@@ -68,17 +73,8 @@ EmptyStateView::EmptyStateView(QWidget* parent) : QWidget(parent)
 void EmptyStateView::setContent(const QString& artwork, const QString& title,
                                 const QString& detail, const QString& actionLabel)
 {
-    if (artwork.isEmpty()) {
-        art_->clear();
-        art_->hide();
-    } else {
-        // Loaded at twice the drawn size so it stays sharp on a HiDPI screen.
-        QPixmap art(artwork);
-        art_->setPixmap(art.isNull()
-            ? QPixmap()
-            : art.scaledToHeight(kArtHeight, Qt::SmoothTransformation));
-        art_->setVisible(!art.isNull());
-    }
+    artwork_ = artwork;
+    drawArtwork();
 
     title_->setText(title);
     detail_->setText(detail);
@@ -89,6 +85,20 @@ void EmptyStateView::setContent(const QString& artwork, const QString& title,
     action_->setText(actionLabel);
     if (!actionLabel.isEmpty()) action_->setAccessibleName(actionLabel);
     action_->setVisible(!actionLabel.isEmpty());
+}
+
+void EmptyStateView::drawArtwork()
+{
+    if (artwork_.isEmpty()) {
+        art_->clear();
+        art_->hide();
+        return;
+    }
+    // Loaded at twice the drawn size so it stays sharp on a HiDPI screen.
+    QPixmap art(artwork_);
+    if (!art.isNull()) art = art.scaledToHeight(kArtHeight, Qt::SmoothTransformation);
+    art_->setPixmap(art);
+    art_->setVisible(!art.isNull());
 }
 
 bool EmptyStateView::hasArtwork() const

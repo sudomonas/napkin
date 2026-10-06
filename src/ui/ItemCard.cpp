@@ -5,6 +5,7 @@
 #include "../domain/Links.h"
 #include "MatchHighlighter.h"
 #include "Tokens.h"
+#include "NapkinStyle.h"
 #include "../domain/Clock.h"
 #include "../domain/Preview.h"
 #include "../domain/TimeFormat.h"
@@ -97,6 +98,9 @@ ItemCard::ItemCard(const Item& item, QWidget* parent) : QWidget(parent), item_(i
 {
     setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_Hover, true);
+    // A card is a surface: a control inside it (a link chip's Open) is drawn
+    // cut out of it, or it would be the card's own colour and invisible.
+    setProperty(NapkinStyle::kSurfaceProperty, true);
 }
 
 void ItemCard::setFooterAction(const QString& label)
@@ -104,11 +108,14 @@ void ItemCard::setFooterAction(const QString& label)
     if (footer_) footer_->setActionLabel(label);
 }
 
-void ItemCard::setContent(QWidget* content, const QString& copyLabel)
+void ItemCard::setContent(QWidget* content, const QString& copyLabel, bool image)
 {
+    image_ = image;
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(kCardPad, kCardPad, kCardPad, kCardPad - 6);
-    layout->setSpacing(kGapTight);
+    const int in = cardInset(image);
+    if (image) layout->setContentsMargins(in, in, in, kImageBottom);
+    else       layout->setContentsMargins(in, in, in, in - 6);
+    layout->setSpacing(image ? kImageGap : kGapTight);
     layout->addWidget(content, 1);
 
     // Every card gets one, the composer included. Without it a card made with
@@ -118,6 +125,7 @@ void ItemCard::setContent(QWidget* content, const QString& copyLabel)
     footer_->setTimestamp(item_.modifiedAt ? item_.modifiedAt : item_.createdAt);
     connect(footer_, &CardFooter::actionTriggered, this,
             [this] { emit copyRequested(item_.id); });
+    if (image) footer_->setContentsMargins(kImageFooterInset, 0, kImageFooterInset, 0);
     layout->addWidget(footer_);
 }
 
@@ -166,12 +174,12 @@ void ItemCard::setCurrent(bool current)
 
 int ItemCard::chromeHeight() const
 {
-    return footer_ ? cardChromeHeight(font()) : kCardPad * 2 - 6;
+    return footer_ ? cardChromeHeight(font(), image_) : kCardPad * 2 - 6;
 }
 
 int ItemCard::heightForColumn(int width) const
 {
-    const int inner = std::max(40, width - kCardPad * 2);
+    const int inner = std::max(40, width - cardInset(image_) * 2);
     const int natural = contentHeightForWidth(inner) + chromeHeight();
 
     clipped_ = natural > kCardMaxHeight;
@@ -215,11 +223,20 @@ void ItemCard::paintEvent(QPaintEvent*)
     // raw Highlight at alpha 160 measured 1.74:1 in Breeze Light — FAINTER than
     // the 3.10:1 resting border it replaced, so selecting a card made its edge
     // harder to see and the state ended up carried by hue alone.
-    const QColor border = selected_ || editing
-        ? readableAccent(pal, editing ? 1.0 : 0.82)
-        : text(pal, cardBorderAlpha(pal, hovered_));
-    p.setPen(QPen(border, selected_ || editing ? 2.0 : 1.0));
-    p.drawPath(path);
+    //
+    // At rest a card has no edge: it is a lighter surface on the window, and
+    // that difference is what makes it a card (the 2026-10-06 mockup). An edge
+    // appears under the pointer, and the accent one for selection and editing.
+    if (selected_ || editing) {
+        // Full strength for both: the softer 0.82 for "selected, not editing"
+        // fell under 3:1 on the window. Selection also has its wash; editing has
+        // the caret.
+        p.setPen(QPen(readableAccent(pal, 1.0), 2.0));
+        p.drawPath(path);
+    } else if (hovered_) {
+        p.setPen(QPen(text(pal, kCardHoverEdge), 1.0));
+        p.drawPath(path);
+    }
 
     // Keyboard focus is its own signal, drawn inside the border so it never
     // collides with it. Without this a focused card was pixel-identical to its
@@ -234,8 +251,10 @@ void ItemCard::paintEvent(QPaintEvent*)
     // A card that has the keyboard itself (Tab lands on cards) is current too.
     if ((current_ || hasFocus()) && !selected_ && !editing) {
         QPainterPath ring;
-        ring.addRoundedRect(box.adjusted(3, 3, -3, -3), kCardRadius - 3, kCardRadius - 3);
-        QPen focusPen(readableAccent(pal, 1.0), 2.0, Qt::DotLine);
+        // From the widget's edge, as the list measures it; box is already 0.5 in.
+        const qreal in = kFocusInset - 0.5;
+        ring.addRoundedRect(box.adjusted(in, in, -in, -in), kCardRadius - 3, kCardRadius - 3);
+        QPen focusPen(readableAccent(pal, 1.0), kFocusWidth);
         p.setPen(focusPen);
         p.drawPath(ring);
     }
@@ -264,7 +283,19 @@ void ItemCard::leaveEvent(QEvent* e)
 TextItemCard::TextItemCard(const Item& item, QWidget* parent) : ItemCard(item, parent)
 {
     auto* edit = new PasteAwareTextEdit;
-    edit->setPlainText(item.text);
+    // Only what a card can show, until someone edits it. setPlainText is
+    // linear in the text — 135 ms for a 1.2 MB log — and a card is clipped at
+    // kCardMaxHeight, which kMeasureLimit characters overflow at any column
+    // width. So a long note costs what a short one does until it is opened.
+    if (item.text.size() > kMeasureLimit) {
+        qsizetype cut = kMeasureLimit;
+        if (item.text.at(cut - 1).isHighSurrogate()) --cut;   // never half a character
+        whole_ = item.text;
+        partial_ = true;
+        edit->setPlainText(item.text.left(cut));
+    } else {
+        edit->setPlainText(item.text);
+    }
     // Start at the beginning, not the end. moveCursor(End) here left the
     // viewport scrolled — horizontally as well as vertically — so the first few
     // pixels of every line were clipped off the left edge. A card is read from
@@ -331,21 +362,48 @@ TextItemCard::TextItemCard(const Item& item, QWidget* parent) : ItemCard(item, p
 
     setContent(content, tr("Copy text"));
 
-    lastText_ = edit_->toPlainText();
-    connect(edit_, &QPlainTextEdit::textChanged, this, [this] {
-        // textChanged also fires for formatting-only changes, and the search
+    lastText_ = text();
+    wasLong_ = text().size() > kMeasureLimit;
+    connect(edit_->document(), &QTextDocument::contentsChange, this,
+            [this](int, int removed, int added) {
+        // A card holding only the top of its note cannot have been edited: it
+        // is read-only until loadWholeText() runs, and that is not an edit.
+        if (partial_) return;
+        // The document also reports formatting-only changes, and the search
         // highlighter reformats the whole document — which marked every visible
         // card dirty, autosaved it, and flashed "Saved" on cards nobody had
         // touched. Only a change to the actual characters is an edit.
-        const QString now = edit_->toPlainText();
-        if (now == lastText_) return;
-        lastText_ = now;
+        //
+        // Formatting never changes the length, so a change that does is an edit
+        // without looking further. Comparing the whole text on every keystroke
+        // — plus two more copies of it below — cost 50 ms a key in a 10 MB note.
+        // Only a same-length change on a card not already edited still needs
+        // the comparison: a highlighting pass, or typing over a selection.
+        //
+        // A same-length change on a card that IS already edited still counts:
+        // typing over a one-letter selection while a background save of the
+        // older text was in flight used to return here, so the save landed,
+        // matched the unchanged count and marked the overtyped letter saved
+        // (independent review). At worst a reformat now costs one extra save.
+        if (removed == added && !dirty_) {
+            const QString now = edit_->toPlainText();
+            if (now == lastText_) return;
+            lastText_ = now;
+        }
 
         dirty_ = true;
+        generation_ = nextEditGeneration();
         updateAccessibleName();
         refreshChip(hasEditFocus());
         emit edited();
-        emit heightChanged();
+        // A note longer than kMeasureLimit is drawn at the maximum height
+        // whatever it says (BoardLayout::heightFor), so while it stays that
+        // long there is nothing to re-measure, and re-measuring meant copying
+        // the whole note out of the editor on every key. endEditing() always
+        // re-measures, so the board's copy is current once editing stops.
+        const bool isLong = edit_->document()->characterCount() > kMeasureLimit + 1;
+        if (!(isLong && wasLong_)) emit heightChanged();
+        wasLong_ = isLong;
     });
     updateAccessibleName();
     refreshChip(/*editing=*/false);
@@ -359,7 +417,34 @@ TextItemCard::TextItemCard(const Item& item, QWidget* parent) : ItemCard(item, p
     edit_->viewport()->installEventFilter(this);
 }
 
-QString TextItemCard::text() const { return edit_->toPlainText(); }
+QString TextItemCard::text() const { return partial_ ? whole_ : edit_->toPlainText(); }
+
+// Unique across every card, not counted per card: a save started by a card the
+// board has since rebuilt must never match the new card's count, or it marks
+// typing that was never written as saved (independent review).
+quint64 TextItemCard::nextEditGeneration()
+{
+    static quint64 next = 0;
+    return ++next;
+}
+
+void TextItemCard::carryOver(quint64 generation)
+{
+    dirty_ = true;
+    generation_ = generation;
+    lastText_.clear();   // only read while clean, and this card is not
+}
+
+void TextItemCard::loadWholeText()
+{
+    if (!partial_) return;
+    // Not an edit, so the comparison in the textChanged handler must see the
+    // same characters before and after.
+    lastText_ = whole_;
+    edit_->setPlainText(whole_);
+    partial_ = false;
+    whole_.clear();
+}
 
 void TextItemCard::setSearchTerms(const QStringList& terms)
 {
@@ -385,7 +470,19 @@ QString TextItemCard::urlAt(const QPoint& viewportPos) const
 // when it happened. Six of nine cards announced nothing at all before this.
 void TextItemCard::updateAccessibleName()
 {
-    const QString body = firstLine(edit_->toPlainText());
+    // The leading lines only: the name is the first non-blank line, and
+    // reading it through text() copied the whole note on every keystroke.
+    QString head;
+    if (partial_) {
+        head = whole_.left(kMeasureLimit);
+    } else {
+        for (QTextBlock b = edit_->document()->begin(); b.isValid() && head.size() < kMeasureLimit;
+             b = b.next()) {
+            head += b.text() + QLatin1Char('\n');
+            if (!b.text().trimmed().isEmpty()) break;
+        }
+    }
+    const QString body = firstLine(head);
     setAccessibleName(body.isEmpty() ? tr("Empty note") : body.left(80));
     const Timestamp when = item_.modifiedAt ? item_.modifiedAt : item_.createdAt;
     setAccessibleDescription(when ? tr("Note, %1").arg(relativeTime(when, nowMs()))
@@ -403,6 +500,7 @@ bool TextItemCard::hasEditFocus() const
 
 void TextItemCard::focusTextInteraction()
 {
+    loadWholeText();   // every way into editing comes through here
     edit_->setFocusPolicy(Qt::StrongFocus);
     edit_->setReadOnly(false);
     edit_->setTextInteractionFlags(Qt::TextEditorInteraction);
@@ -461,7 +559,7 @@ void TextItemCard::applyPalette()
 
 QString TextItemCard::linkUrl() const
 {
-    return links::soleUrl(edit_->toPlainText()).value_or(QString());
+    return links::soleUrl(text()).value_or(QString());
 }
 
 bool TextItemCard::showingChip() const
@@ -633,6 +731,7 @@ bool TextItemCard::calculate()
 
 void TextItemCard::selectAllText()
 {
+    loadWholeText();
     edit_->selectAll();
 }
 
@@ -722,8 +821,6 @@ ImageItemCard::ImageItemCard(const Item& item, Thumbnailer& thumbs, BlobStore& b
                              QWidget* parent)
     : ItemCard(item, parent)
 {
-    setToolTip(tr("Double-click to view full size"));
-
     auto* holder = new QWidget;
     auto* layout = new QVBoxLayout(holder);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -736,20 +833,27 @@ ImageItemCard::ImageItemCard(const Item& item, Thumbnailer& thumbs, BlobStore& b
     // failures. The card used to decode the original blob itself, on the UI
     // thread, in its constructor: Qt's PNG handler ignores setScaledSize and
     // decodes in full, so a 208 KB 8000x8000 screenshot cost 288 MB and 410 ms
-    // — per card, every time the buffer was opened. The Thumbnailer pays that
-    // once, then reads a small cached file.
-    const bool fileExists = QFile::exists(blobs.pathFor(item.blobHash, item.mime));
-    if (fileExists)
-        source_ = thumbs.forBlob(item.blobHash, item.mime, kCardMaxWidth * 2);
-
-    if (source_.isNull()) {
-        // Two different failures, and telling them apart matters: one means the
-        // file is gone, the other means it is right there and unreadable. The
-        // card used to claim "no longer on disk" for both.
-        view_->setText(fileExists ? tr("This image is too large to display.")
-                                  : tr("This image is no longer on disk."));
-        view_->setEnabled(false);
+    // — per card, every time the buffer was opened. The Thumbnailer then paid
+    // it once per image, but still on the UI thread, still ~100 ms each, so
+    // scrolling a board of 500 images froze the window for 14 seconds.
+    //
+    // Now it never waits. The board sized this card from the dimensions stored
+    // with the item, so the space is already right; the picture arrives into it.
+    fileExists_ = QFile::exists(blobs.pathFor(item.blobHash, item.mime));
+    if (fileExists_) {
+        const int size = kPreviewSize;
+        loading_ = thumbs.request(item.blobHash, item.mime, size, &source_)
+                   == Thumbnailer::State::Pending;
+        if (loading_)
+            connect(&thumbs, &Thumbnailer::ready, this,
+                    [this, size](const QString& hash, int maxSize, const QPixmap& pixmap) {
+                        if (!loading_ || hash != item_.blobHash || maxSize != size) return;
+                        source_ = pixmap;
+                        loading_ = false;
+                        showSource();
+                    });
     }
+    showSource();
     layout->addWidget(view_);
 
     QStringList facts;
@@ -759,14 +863,12 @@ ImageItemCard::ImageItemCard(const Item& item, Thumbnailer& thumbs, BlobStore& b
     if (item.byteSize > 0) facts << formatBytes(item.byteSize);
     if (item.animated) facts << tr("animated");
 
-    caption_ = new QLabel(facts.join(QStringLiteral(" · ")));
-    caption_->setFont(scaledBy(caption_->font(), kTypeCaption));
-    QPalette capPal = caption_->palette();
-    capPal.setColor(QPalette::WindowText, text(palette(), kTextTertiary));
-    caption_->setPalette(capPal);
-    layout->addWidget(caption_);
+    // The facts that used to be a caption line under every picture: the mockup
+    // gives the picture the card, and they are a hover away instead.
+    setToolTip(facts.join(QStringLiteral(" · ")) + QLatin1Char('\n')
+               + tr("Double-click to view full size"));
 
-    setContent(holder, tr("Copy image"));
+    setContent(holder, tr("Copy image"), true);
     setAccessibleName(item.sourceName.isEmpty() ? tr("Image") : item.sourceName);
     setAccessibleDescription(facts.join(QStringLiteral(", ")));
 }
@@ -776,47 +878,100 @@ QString ImageItemCard::asPlainText() const
     return item_.sourceName.isEmpty() ? tr("[image]") : item_.sourceName;
 }
 
+void ImageItemCard::showSource()
+{
+    if (loading_) {
+        // A quiet tile where the picture will be, not a message: the wait is
+        // usually a few frames, and text flashing up in every card during a
+        // scroll reads as something wrong. Sized like the picture, so the
+        // caption is already where it will stay.
+        if (width() > 0) rescale();
+        return;
+    }
+    if (source_.isNull()) {
+        // Two different failures, and telling them apart matters: one means the
+        // file is gone, the other means it is right there and unreadable. The
+        // card used to claim "no longer on disk" for both.
+        view_->setText(fileExists_ ? tr("This image is too large to display.")
+                                   : tr("This image is no longer on disk."));
+        view_->setEnabled(false);
+        return;
+    }
+    if (width() > 0) rescale();   // before the first resize there is nothing to fit
+}
+
 int ImageItemCard::contentHeightForWidth(int innerWidth) const
 {
-    const int captionH = caption_ ? caption_->sizeHint().height() + 6 : 0;
-    if (source_.isNull()) return 96 + captionH;
+    if (loading_ && item_.width > 0 && item_.height > 0)
+        return item_.height * std::min(innerWidth, item_.width) / std::max(1, item_.width);
+    if (source_.isNull()) return 96;
 
     // Never upscaled: a 200x140 favicon draws at 200x140. Stretching a small
     // image to fill a column is the fastest way to make a UI look cheap.
-    const int drawn = source_.height() * std::min(innerWidth, source_.width())
-                      / std::max(1, source_.width());
-    return drawn + captionH;
+    return source_.height() * std::min(innerWidth, source_.width())
+           / std::max(1, source_.width());
 }
 
 void ImageItemCard::applyPalette()
 {
-    if (!caption_) return;
-    QPalette pal = caption_->palette();
-    pal.setColor(QPalette::WindowText, text(palette(), kTextTertiary));
-    caption_->setPalette(pal);
     rescale();   // the image's edge is drawn in the theme's colour
 }
 
 void ImageItemCard::rescale()
 {
-    if (source_.isNull()) return;
-    // Must use the same chrome arithmetic as heightForColumn, or the caption
+    if (source_.isNull() && !loading_) return;
+    // Must use the same chrome arithmetic as heightForColumn, or the footer
     // ends up painted over the bottom of the picture.
-    const int available = std::max(60, width() - kCardPad * 2);
-    const int captionH = caption_ ? caption_->sizeHint().height() + 6 : 0;
-    const int room = std::max(60, height() - chromeHeight() - captionH);
+    const int available = std::max(60, width() - cardInset(true) * 2);
+    const int room = std::max(60, height() - chromeHeight());
+
+    if (loading_) {
+        // The shape the preview will have — the stored size, brought within the
+        // preview's box the way the Thumbnailer does it — then fitted exactly as
+        // the picture will be, so the two land on the same pixel.
+        QSize natural = item_.width > 0 && item_.height > 0
+                            ? QSize(item_.width, item_.height) : QSize(available, room);
+        if (natural.width() > kPreviewSize || natural.height() > kPreviewSize)
+            natural = natural.scaled(kPreviewSize, kPreviewSize, Qt::KeepAspectRatio);
+        // Twice, as below: QPixmap::scaled re-fits the target it is given and
+        // rounds differently, so a single fit came out a pixel wider.
+        const QSize target = natural.scaled(available, room, Qt::KeepAspectRatio)
+                                 .boundedTo(natural);
+        QPixmap tile(natural.scaled(target, Qt::KeepAspectRatio));
+        QColor fill = palette().color(QPalette::Text);
+        fill.setAlpha(18);
+        tile.fill(Qt::transparent);
+        QPainter p(&tile);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QPainterPath shape;
+        shape.addRoundedRect(QRectF(tile.rect()), kInsetRadius, kInsetRadius);
+        p.fillPath(shape, fill);
+        view_->setPixmap(tile);
+        return;
+    }
 
     const QSize target = source_.size().scaled(available, room, Qt::KeepAspectRatio)
                              .boundedTo(source_.size());
-    QPixmap shown = source_.scaled(target, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    // The same hairline edge the list's thumbnails carry, for the same reason:
-    // a picture the colour of the card read as empty space.
+    const QPixmap scaled = source_.scaled(target, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    // Rounded to sit inside the card's own corner, as a photo in a frame. The
+    // same hairline edge the list's thumbnails carry, for the same reason: a
+    // picture the colour of the card read as empty space.
+    QPixmap shown(scaled.size());
+    shown.fill(Qt::transparent);
     {
-        QPainter edge(&shown);
+        QPainter p(&shown);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        QPainterPath shape;
+        shape.addRoundedRect(QRectF(shown.rect()), kInsetRadius, kInsetRadius);
+        p.setClipPath(shape);
+        p.drawPixmap(0, 0, scaled);
+        p.setClipping(false);
         QColor c = palette().color(QPalette::Text);
-        c.setAlpha(60);
-        edge.setPen(QPen(c, 1));
-        edge.drawRect(QRectF(shown.rect()).adjusted(0.5, 0.5, -0.5, -0.5));
+        c.setAlpha(kImageEdge);
+        p.setPen(QPen(c, 1));
+        p.drawRoundedRect(QRectF(shown.rect()).adjusted(0.5, 0.5, -0.5, -0.5),
+                          kInsetRadius - 0.5, kInsetRadius - 0.5);
     }
     view_->setPixmap(shown);
 }

@@ -25,6 +25,9 @@ public:
     // Only the first few items, for deriving a card preview. A list of 5000
     // buffers must never read every item to draw itself (SPEC.md §12).
     std::vector<Item> previewHead(BufferId bufferId, int limit = kPreviewHeadSize);
+    // The most recently added or edited items — the top of the board — text
+    // cut to what a list row can show.
+    std::vector<Item> latestItems(BufferId bufferId, int limit);
     int countForBuffer(BufferId bufferId);
 
     struct Counts { int total = 0; int images = 0; };

@@ -18,6 +18,7 @@ Buffer readBuffer(const Statement& s)
     b.pinned     = s.columnBool(3);
     b.kept       = s.columnBool(4);
     b.deletedAt  = s.columnOptInt64(5);
+    b.name       = s.columnText(6);
     return b;
 }
 
@@ -34,7 +35,7 @@ BufferId BufferRepository::create(bool pinned, bool kept)
 
 std::optional<Buffer> BufferRepository::find(BufferId id)
 {
-    Statement s(db_, "SELECT id, created_at, modified_at, pinned, kept, deleted_at"
+    Statement s(db_, "SELECT id, created_at, modified_at, pinned, kept, deleted_at, name"
                      " FROM buffers WHERE id = ?");
     s.bind(1, id);
     if (!s.step()) return std::nullopt;
@@ -52,6 +53,17 @@ void BufferRepository::setPinned(BufferId id, bool pinned)
 {
     Statement s(db_, "UPDATE buffers SET pinned = ? WHERE id = ?");
     s.bind(1, pinned).bind(2, id);
+    s.exec();
+}
+
+void BufferRepository::setName(BufferId id, const QString& name)
+{
+    // Not a change to the napkin's contents, so modified_at stays: naming one
+    // must not move it in the list.
+    const QString cleaned = name.simplified().left(kMaxNameLength);
+    Statement s(db_, "UPDATE buffers SET name = ? WHERE id = ?");
+    if (cleaned.isEmpty()) s.bindNull(1); else s.bind(1, cleaned);
+    s.bind(2, id);
     s.exec();
 }
 
@@ -100,7 +112,7 @@ std::vector<Buffer> BufferRepository::listLive(int limit, int offset)
 {
     // SPEC.md §7: pinned above everything, then newest first. Windowed, never
     // SELECT * over the whole table (§12).
-    Statement s(db_, "SELECT id, created_at, modified_at, pinned, kept, deleted_at"
+    Statement s(db_, "SELECT id, created_at, modified_at, pinned, kept, deleted_at, name"
                      " FROM buffers WHERE deleted_at IS NULL"
                      " ORDER BY pinned DESC, modified_at DESC, id DESC"
                      " LIMIT ? OFFSET ?");
@@ -113,7 +125,7 @@ std::vector<Buffer> BufferRepository::listLive(int limit, int offset)
 
 std::vector<Buffer> BufferRepository::listTrash()
 {
-    Statement s(db_, "SELECT id, created_at, modified_at, pinned, kept, deleted_at"
+    Statement s(db_, "SELECT id, created_at, modified_at, pinned, kept, deleted_at, name"
                      " FROM buffers WHERE deleted_at IS NOT NULL"
                      " ORDER BY deleted_at DESC");
     std::vector<Buffer> out;

@@ -181,6 +181,33 @@ void drawMore(QPainter* p, const QRect& box, const QColor& colour)
     p->restore();
 }
 
+void drawMenu(QPainter* p, const QRect& box, const QColor& colour)
+{
+    p->save();
+    p->setRenderHint(QPainter::Antialiasing, true);
+    const QRectF r(box);
+    p->setPen(QPen(colour, std::max(1.2, r.width() * 0.085), Qt::SolidLine, Qt::RoundCap));
+    for (qreal f : {0.21, 0.5, 0.79})   // Lucide's 5, 12 and 19 of 24
+        p->drawLine(QPointF(r.left() + r.width() * 0.17, r.top() + r.height() * f),
+                    QPointF(r.right() - r.width() * 0.17, r.top() + r.height() * f));
+    p->restore();
+}
+
+void drawSearch(QPainter* p, const QRect& box, const QColor& colour)
+{
+    p->save();
+    p->setRenderHint(QPainter::Antialiasing, true);
+    const QRectF r(box);
+    p->setPen(QPen(colour, std::max(1.2, r.width() * 0.085), Qt::SolidLine, Qt::RoundCap));
+    p->setBrush(Qt::NoBrush);
+    const QPointF c(r.left() + r.width() * 0.46, r.top() + r.height() * 0.46);
+    const qreal rad = r.width() * 0.33;
+    p->drawEllipse(c, rad, rad);
+    p->drawLine(QPointF(c.x() + rad * 0.72, c.y() + rad * 0.72),
+                QPointF(r.right() - r.width() * 0.12, r.bottom() - r.height() * 0.12));
+    p->restore();
+}
+
 QIcon glyphIcon(GlyphPainter draw, const QPalette& palette, int size, qreal dpr)
 {
     auto render = [&](const QColor& colour) {
@@ -209,6 +236,18 @@ QPixmap renderSvg(const QByteArray& svg, const QColor& colour, int size, qreal d
     reader.setScaledSize(QSize(size, size) * dpr);
     QImage image = reader.read();
     if (image.isNull()) return {};
+    // A colour's name is its RGB alone, so a translucent colour — a quiet
+    // glyph at a text alpha — rendered fully opaque. The alpha goes on after.
+    if (colour.alpha() < 255) {
+        image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        QImage faded(image.size(), QImage::Format_ARGB32_Premultiplied);
+        faded.fill(Qt::transparent);
+        QPainter p(&faded);
+        p.setOpacity(colour.alphaF());
+        p.drawImage(0, 0, image);
+        p.end();
+        image = faded;
+    }
     QPixmap pm = QPixmap::fromImage(image);
     pm.setDevicePixelRatio(dpr);
     return pm;

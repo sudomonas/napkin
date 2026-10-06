@@ -1,16 +1,26 @@
 #include "../src/ui/SettingsDialog.h"
 #include "../src/ui/Tokens.h"
 #include "../src/ui/ItemCanvas.h"
+#include "../src/ui/BufferCardDelegate.h"
+#include "../src/ui/BufferListModel.h"
 #include "GuiFixture.h"
 
 #include <QLabel>
 #include <QAbstractButton>
 #include <QTimer>
 #include <QImageReader>
+#include <QPainter>
+#include <QCheckBox>
+#include <QFontComboBox>
+#include <QStackedWidget>
+#include <QListWidget>
+#include <QScrollBar>
+#include <QStyleOptionSlider>
 #include <QPushButton>
 #include <QToolButton>
 #include <QComboBox>
 #include <QGroupBox>
+#include <QMenu>
 #include <QMenuBar>
 #include <QFont>
 #include <QSettings>
@@ -148,13 +158,149 @@ private slots:
     {
         QSettings().setValue(QStringLiteral("appearance/textScalePercent"), 0);
         SettingsDialog::applyAppearance();
-        QVERIFY(QApplication::font().pointSizeF() >= 5.0);
+        QVERIFY(QApplication::font().pointSizeF() >= tokens::kMinPointSize);
 
         QSettings().setValue(QStringLiteral("appearance/textScalePercent"), 100000);
         QVERIFY(SettingsDialog::textScalePercent() <= 300);
 
         QSettings().setValue(QStringLiteral("appearance/textScalePercent"), 100);
         SettingsDialog::applyAppearance();
+    }
+
+    // Since the 2026-10-06 mockup a list row is part of the sidebar: at rest it
+    // has no fill and no edge of its own, and the chosen row is cut out of the
+    // panel in the window's colour, as the header's Home / Trash switch is. An
+    // edge drawn at rest would put a box around every napkin in the list.
+    void aListRowIsPartOfTheSidebarUntilChosen()
+    {
+        GuiFixture f;
+        f.seed("first");
+        f.seed("second");
+        auto* delegate = f.view()->findChild<BufferCardDelegate*>();
+        QVERIFY(delegate);
+        const QModelIndex index = f.model()->index(1, 0);   // not under a section label
+        QVERIFY(!index.data(BufferListModel::SectionFirstRole).toBool());
+
+        for (auto theme : {SettingsDialog::Theme::Light, SettingsDialog::Theme::Dark}) {
+            QSettings().setValue(QStringLiteral("appearance/theme"), int(theme));
+            SettingsDialog::applyAppearance();
+            const QPalette pal = QApplication::palette();
+            const QString name = theme == SettingsDialog::Theme::Light ? "Light" : "Dark";
+
+            for (bool selected : {false, true}) {
+                QStyleOptionViewItem option;
+                option.initFrom(f.view());
+                option.palette = pal;
+                option.state = QStyle::State_Enabled;
+                if (selected) option.state |= QStyle::State_Selected;
+                option.rect = QRect(QPoint(0, 0), QSize(340, delegate->sizeHint(option, index).height()));
+
+                QImage image(option.rect.size(), QImage::Format_RGB32);
+                image.fill(pal.color(QPalette::Base));   // the sidebar
+                {
+                    QPainter p(&image);
+                    delegate->paint(&p, option, index);
+                }
+                // On the row's left edge, and just inside it past the rail.
+                const int y = option.rect.height() / 2;
+                const QColor edge = image.pixelColor(tokens::kRowMarginX, y);
+                // Just inside the row's edge — where the accent rail used to be,
+                // so its removal is checked too.
+                const QColor inside = image.pixelColor(tokens::kRowMarginX + 3, y);
+                const QColor expected = pal.color(selected ? QPalette::Window : QPalette::Base);
+                QVERIFY2(inside == expected,
+                         qPrintable(QStringLiteral("%1, %2: row is %3, expected %4")
+                                        .arg(name, selected ? "chosen" : "at rest",
+                                             inside.name(), expected.name())));
+                if (!selected)
+                    QVERIFY2(edge == pal.color(QPalette::Base),
+                             qPrintable(QStringLiteral("%1: a resting row drew an edge %2")
+                                            .arg(name, edge.name())));
+            }
+        }
+        QSettings().setValue(QStringLiteral("appearance/theme"), int(SettingsDialog::Theme::System));
+        SettingsDialog::applyAppearance();
+    }
+
+    // NapkinStyle sized the thumb with clamp(len, 36, barLength): a bar shorter
+    // than 36px made the low bound exceed the high one — undefined, and an
+    // abort under the Arch package's _GLIBCXX_ASSERTIONS. Without assertions
+    // the thumb came out longer than the bar, starting above it.
+    void aShortScrollBarStillHasAThumbInsideIt()
+    {
+        GuiFixture f;   // installs NapkinStyle through applyAppearance
+        QVERIFY(QApplication::style()->inherits("napkin::NapkinStyle"));
+        QScrollBar bar(Qt::Vertical);
+        bar.setRange(0, 100);
+        bar.setPageStep(10);
+        bar.resize(10, 20);
+        QStyleOptionSlider opt;
+        opt.initFrom(&bar);
+        opt.orientation = Qt::Vertical;
+        opt.minimum = 0; opt.maximum = 100; opt.pageStep = 10;
+        for (int value : {0, 50, 100}) {
+            opt.sliderPosition = opt.sliderValue = value;
+            const QRect thumb = QApplication::style()->subControlRect(
+                QStyle::CC_ScrollBar, &opt, QStyle::SC_ScrollBarSlider, &bar);
+            QVERIFY2(thumb.top() >= 0 && thumb.bottom() < 20 && thumb.height() > 0,
+                     qPrintable(QStringLiteral("value %1: thumb %2..%3 in a 20px bar")
+                                    .arg(value).arg(thumb.top()).arg(thumb.bottom())));
+        }
+    }
+
+    // The menu's Theme items change the theme at once and say which is chosen,
+    // including a choice made in Settings since the menu was last open.
+    void theMenuSwitchesTheThemeAndShowsTheChoice()
+    {
+        GuiFixture f;
+        auto* themeMenu = f.window.findChild<QMenu*>(QStringLiteral("themeMenu"));
+        QVERIFY(themeMenu);
+        auto item = [&](SettingsDialog::Theme t) -> QAction* {
+            for (QAction* a : themeMenu->actions())
+                if (a->data().toInt() == int(t)) return a;
+            return nullptr;
+        };
+        QVERIFY(item(SettingsDialog::Theme::System) && item(SettingsDialog::Theme::Light)
+                && item(SettingsDialog::Theme::Dark));
+
+        item(SettingsDialog::Theme::Dark)->trigger();
+        QCOMPARE(SettingsDialog::theme(), SettingsDialog::Theme::Dark);
+        QCOMPARE(QApplication::palette().color(QPalette::Window).rgb(), tokens::kDarkColors.window);
+
+        item(SettingsDialog::Theme::Light)->trigger();
+        QCOMPARE(QApplication::palette().color(QPalette::Window).rgb(), tokens::kLightColors.window);
+
+        SettingsDialog::setTheme(SettingsDialog::Theme::Dark);   // as Settings would
+        emit themeMenu->aboutToShow();
+        QVERIFY(item(SettingsDialog::Theme::Dark)->isChecked());
+        QVERIFY(!item(SettingsDialog::Theme::Light)->isChecked());
+
+        SettingsDialog::setTheme(SettingsDialog::Theme::System);
+    }
+
+    // Two panes, like KDE's System Settings: a list of pages and the page.
+    void theSettingsDialogIsAListOfPagesAndThePage()
+    {
+        SettingsDialog d;
+        d.show();
+        QCoreApplication::processEvents();
+        auto* pages = d.findChild<QListWidget*>(QStringLiteral("settingsPages"));
+        auto* stack = d.findChild<QStackedWidget*>(QStringLiteral("settingsStack"));
+        QVERIFY(pages && stack);
+        QCOMPARE(pages->count(), stack->count());
+        QCOMPARE(pages->count(), 3);
+        QCOMPARE(stack->currentIndex(), 0);
+        // Every control lives on exactly one page, and choosing that page shows it.
+        for (int i = 0; i < pages->count(); ++i) {
+            pages->setCurrentRow(i);
+            QCOMPARE(stack->currentIndex(), i);
+            QVERIFY2(!stack->currentWidget()->findChildren<QWidget*>().isEmpty(),
+                     qPrintable(pages->item(i)->text()));
+        }
+        pages->setCurrentRow(0);
+        QVERIFY(stack->currentWidget()->findChild<QFontComboBox*>());   // Appearance holds the typeface
+        pages->setCurrentRow(2);
+        QVERIFY(stack->currentWidget()->findChild<QCheckBox*>());       // Background holds the tray
     }
 
     void aChosenAccentSurvivesEveryTheme()
@@ -267,21 +413,30 @@ private slots:
                  tokens::text(app, tokens::kTextSecondary));
     }
 
-    void theMenuBarFollowsNapkinsThemeNotTheDesktops()
+    // The menu replaced the menu bar, and it is drawn by NapkinStyle from the
+    // palette — so it follows Napkin's theme, not the desktop's, with no
+    // stylesheet to keep in step. (The menu bar needed one: Breeze painted it in
+    // the desktop's header colours.)
+    void theMenuFollowsNapkinsThemeNotTheDesktops()
     {
-        // Breeze paints the bar in the desktop scheme's header colours, so with
-        // Napkin set to Dark on a light desktop the labels went dark-on-dark.
-        // The bar now takes Napkin's palette, and must re-take it on a switch.
         GuiFixture f;
+        auto* button = f.window.findChild<QToolButton*>(QStringLiteral("overflowButton"));
+        QVERIFY(button && button->menu());
+        QMenu* menu = button->menu();
         for (auto theme : {SettingsDialog::Theme::Dark, SettingsDialog::Theme::Light,
                            SettingsDialog::Theme::Dark}) {
             QSettings().setValue(QStringLiteral("appearance/theme"), int(theme));
             SettingsDialog::applyAppearance();
             QCoreApplication::processEvents();
-            const QPalette p = QApplication::palette();
-            const QString sheet = f.window.menuBar()->styleSheet();
-            QVERIFY2(sheet.contains(p.color(QPalette::Window).name()), qPrintable(sheet));
-            QVERIFY2(sheet.contains(p.color(QPalette::WindowText).name()), qPrintable(sheet));
+            menu->popup(QPoint(0, 0));
+            QCoreApplication::processEvents();
+            const QImage img = menu->grab().toImage();
+            menu->hide();
+            // Inside the panel, clear of the rounded corners and the items' text.
+            const QColor panel = img.pixelColor(img.width() - 4, img.height() / 2);
+            const QColor base = QApplication::palette().color(QPalette::Base);
+            QVERIFY2(panel == base, qPrintable(QStringLiteral("menu %1, palette Base %2")
+                                                   .arg(panel.name(), base.name())));
         }
         QSettings().setValue(QStringLiteral("appearance/theme"), int(SettingsDialog::Theme::Light));
         SettingsDialog::applyAppearance();
@@ -314,7 +469,9 @@ private slots:
     void theToolbarIconsFollowTheTheme()
     {
         GuiFixture f;
-        auto* trash = f.window.findChild<QPushButton*>(QStringLiteral("trashToggle"));
+        // The gear: the Trash toggle that used to be checked here is a word in
+        // the Home / Trash switch now, with no glyph.
+        auto* trash = f.window.findChild<QToolButton*>(QStringLiteral("settingsButton"));
         auto* more = f.window.findChild<QToolButton*>(QStringLiteral("overflowButton"));
         QVERIFY(trash && more);
         QVERIFY(!trash->icon().isNull());
@@ -337,7 +494,7 @@ private slots:
         SettingsDialog::applyAppearance();
         QCoreApplication::processEvents();
         const QColor dark = centre(trash->icon());
-        QVERIFY2(dark.lightnessF() > light.lightnessF(), "the trash glyph did not follow the theme");
+        QVERIFY2(dark.lightnessF() > light.lightnessF(), "the gear glyph did not follow the theme");
         QSettings().setValue(QStringLiteral("appearance/theme"), int(SettingsDialog::Theme::Light));
         SettingsDialog::applyAppearance();
     }
@@ -347,12 +504,12 @@ private slots:
     {
         if (!QImageReader::supportedImageFormats().contains("svg"))
             QSKIP("no SVG image plugin here; the drawn fallbacks are used instead");
-        for (const char* name : {"plus", "ellipsis", "trash-2", "settings"}) {
+        for (const char* name : {"plus", "menu", "search", "trash-2", "settings"}) {
             QImageReader reader(QStringLiteral(":/resources/icons/lucide/%1.svg").arg(QLatin1String(name)));
             QVERIFY2(!reader.read().isNull(), name);
         }
         GuiFixture f;
-        for (const char* button : {"newButton", "overflowButton", "trashToggle", "settingsButton"}) {
+        for (const char* button : {"newButton", "overflowButton", "settingsButton"}) {
             auto* b = f.window.findChild<QAbstractButton*>(QString::fromLatin1(button));
             QVERIFY2(b && !b->icon().isNull(), button);
         }

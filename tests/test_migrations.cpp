@@ -18,6 +18,24 @@ private slots:
         QCOMPARE(t.buffers.countLive(), 0);
     }
 
+    // v7: a database from before names keeps every napkin, unnamed.
+    void aV6DatabaseGainsNamesWithEveryNapkinUnnamed()
+    {
+        TestDb t;
+        const auto id = t.buffers.create();
+        t.db.exec("ALTER TABLE buffers DROP COLUMN name;");
+        t.db.setUserVersion(6);
+        napkin::migrate(t.db);
+        QCOMPARE(t.db.userVersion(), napkin::kSchemaVersion);
+        const auto found = t.buffers.find(id);
+        QVERIFY(found.has_value());
+        QVERIFY(found->name.isEmpty());
+        t.buffers.setName(id, QStringLiteral("now named"));
+        QCOMPARE(t.buffers.find(id)->name, QStringLiteral("now named"));
+        t.buffers.setName(id, QStringLiteral("   "));   // blank is "no name", stored as NULL
+        QVERIFY(t.buffers.find(id)->name.isEmpty());
+    }
+
     void refusesToDowngrade()
     {
         TestDb t;

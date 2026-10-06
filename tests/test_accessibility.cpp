@@ -6,6 +6,8 @@
 #include <QAbstractButton>
 #include <QLineEdit>
 #include <QMenuBar>
+#include <QTimer>
+#include <QToolButton>
 #include <QtTest>
 
 using namespace napkin;
@@ -51,24 +53,38 @@ private slots:
                                                   + silent.join(QStringLiteral(", "))));
     }
 
+    // With no menu bar there is no Alt to open one, so the menu button needs a
+    // key of its own (F10, as GNOME and KDE use) and a place in the Tab order.
+    // Ctrl+F reached the search field and a click did not: it had been left
+    // with no focus policy, and setFocus() ignores the policy while a mouse
+    // press honours it. Both ways in must work.
+    void theSearchFieldTakesFocusFromAClickAndFromTab()
+    {
+        GuiFixture f;
+        auto* field = f.window.findChild<QLineEdit*>(QStringLiteral("searchField"));
+        QVERIFY(field);
+        QVERIFY2(field->focusPolicy() & Qt::ClickFocus, "a click cannot focus the search field");
+        QVERIFY2(field->focusPolicy() & Qt::TabFocus, "Tab cannot reach the search field");
+    }
+
     void everyMenuActionIsReachableByKeyboard()
     {
         GuiFixture f;
-        QStringList unreachable;
-        for (QAction* action : f.window.menuBar()->actions()) {
-            QMenu* menu = action->menu();
-            if (!menu) continue;
-            // A menu with no mnemonic cannot be opened without the mouse.
-            if (!action->text().contains(u'&'))
-                unreachable << action->text();
-            for (QAction* item : menu->actions()) {
-                if (item->isSeparator()) continue;
-                QVERIFY2(!item->text().isEmpty(),
-                         qPrintable(QStringLiteral("nameless action in ") + action->text()));
-            }
+        auto* button = f.window.findChild<QToolButton*>(QStringLiteral("overflowButton"));
+        QVERIFY(button && button->menu());
+        QVERIFY2(button->focusPolicy() & Qt::TabFocus, "the menu button cannot be tabbed to");
+
+        auto* open = f.window.findChild<QAction*>(QStringLiteral("openMenuAction"));
+        QVERIFY(open);
+        QCOMPARE(open->shortcut(), QKeySequence(Qt::Key_F10));
+        QVERIFY2(f.window.actions().contains(open), "F10 is not bound to the window");
+
+        for (QAction* item : button->menu()->actions()) {
+            if (item->isSeparator()) continue;
+            QVERIFY2(!item->text().isEmpty(), "a nameless action in the menu");
         }
-        QVERIFY2(unreachable.isEmpty(),
-                 qPrintable(QStringLiteral("no mnemonic: ") + unreachable.join(u',')));
+        QTimer::singleShot(0, button->menu(), [menu = button->menu()] { menu->hide(); });
+        open->trigger();
     }
 
     void theBufferListSpeaksItsRows()

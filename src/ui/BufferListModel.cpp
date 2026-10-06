@@ -110,6 +110,9 @@ int BufferListModel::draftRow() const
 
 BufferPreview BufferListModel::previewFor(BufferId id) const
 {
+    QString name;
+    for (const auto& b : rows_)
+        if (b.id == id) { name = b.name; break; }
     if (const auto it = previewCache_.constFind(id); it != previewCache_.constEnd())
         return *it;
 
@@ -120,7 +123,11 @@ BufferPreview BufferListModel::previewFor(BufferId id) const
     // queries.
     if (previewCache_.size() >= kPreviewCacheLimit) previewCache_.clear();
     const auto counts = items_.countsForBuffer(id);
-    const auto preview = derivePreview(items_.previewHead(id), counts.total, counts.images);
+    // Two, so the newest can be skipped when it is the item the title came from.
+    const auto preview = derivePreview(items_.previewHead(id), counts.total, counts.images,
+                                       counts.total > 1 ? items_.latestItems(id, 2)
+                                                        : std::vector<Item>{},
+                                       name);
     previewCache_.insert(id, preview);
     return preview;
 }
@@ -194,6 +201,7 @@ QVariant BufferListModel::data(const QModelIndex& index, int role) const
     }
     case ThumbCountRole: return int(p.thumbs.size());
     case SnippetRole:    return snippets_.value(b.id);
+    case LatestRole:     return p.latest;
     case Qt::AccessibleTextRole: {
         // Never encode state in styling alone (SPEC.md §14).
         QString label = p.primary.isEmpty() ? tr("Empty napkin") : p.primary;

@@ -29,6 +29,11 @@ void drawGear(QPainter* p, const QRect& box, const QColor& colour);
 // Three dots in a row: "more actions".
 void drawMore(QPainter* p, const QRect& box, const QColor& colour);
 
+// Three bars ("the menu") and a magnifier, as fallbacks for Lucide's menu and
+// search — the header's menu button and the search field's glyph.
+void drawMenu(QPainter* p, const QRect& box, const QColor& colour);
+void drawSearch(QPainter* p, const QRect& box, const QColor& colour);
+
 // One of the glyphs above as a QIcon for a button, drawn in the palette's
 // button-text colour (and dimmed when disabled) at the given device pixel
 // ratio, so it stays crisp and follows the theme. Rebuild it on a palette

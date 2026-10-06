@@ -9,6 +9,14 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 
+# The Arch package is built with -D_GLIBCXX_ASSERTIONS (makepkg.conf), so every
+# build here is too: the tests must run the checks the shipped binary runs. A
+# std::clamp with its bounds reversed in NapkinStyle passed every local test and
+# would have aborted only in the package (independent review, 2026-10-06).
+if(NOT MSVC)
+  add_compile_definitions(_GLIBCXX_ASSERTIONS)
+endif()
+
 find_package(Qt6 6.5 REQUIRED COMPONENTS Gui Widgets Network Test)
 
 # --- SQLite -------------------------------------------------------------------
@@ -93,6 +101,8 @@ add_library(napkin_media STATIC
   src/media/ClipboardContent.cpp
 )
 target_link_libraries(napkin_media PUBLIC napkin_core Qt6::Gui)
+# The Thumbnailer signals when work it did on a worker thread is ready.
+set_target_properties(napkin_media PROPERTIES AUTOMOC ON)
 
 # --- ui -----------------------------------------------------------------------
 # A library rather than loose sources in the executable, so the widget tree can
@@ -111,7 +121,10 @@ qt_add_library(napkin_ui STATIC
   src/ui/BoardLayout.cpp
 
   src/ui/Autosave.cpp
+  src/ui/BackgroundSaver.cpp
   src/ui/Icons.cpp
+  src/ui/NapkinStyle.cpp
+  src/ui/TourDialog.cpp
   src/ui/TrayIcon.cpp
   src/ui/UndoToast.cpp
   src/ui/Lightbox.cpp
@@ -120,6 +133,7 @@ qt_add_library(napkin_ui STATIC
   src/ui/WelcomeView.cpp
   src/ui/EmptyStateView.cpp
   src/app/SingleInstance.cpp
+  src/app/GlobalShortcut.cpp
   src/app/Application.cpp
 )
 # The icons belong to the UI library, not the executable: WelcomeView draws the
@@ -139,8 +153,25 @@ qt_add_resources(napkin_ui "icons" PREFIX "/" FILES
   resources/icons/lucide/ellipsis.svg
   resources/icons/lucide/settings.svg
   resources/icons/lucide/plus.svg
+  resources/icons/lucide/menu.svg
+  resources/icons/lucide/search.svg
+  # Napkin's typeface, the same on every platform (resources/fonts/inter/LICENSE.txt,
+  # SIL OFL 1.1). Static weights rather than the variable font: every Qt font
+  # backend handles a static face the same way.
+  resources/fonts/inter/Inter-Regular.ttf
+  resources/fonts/inter/Inter-Medium.ttf
+  resources/fonts/inter/Inter-SemiBold.ttf
+  resources/fonts/inter/Inter-Bold.ttf
 )
 target_link_libraries(napkin_ui PUBLIC napkin_core napkin_media Qt6::Widgets Qt6::Network)
+# The global capture shortcut talks to the desktop portal over D-Bus, which only
+# Linux desktops have. Elsewhere GlobalShortcut compiles to a stub that says it
+# is unsupported, and the setting is not offered.
+if(UNIX AND NOT APPLE)
+  find_package(Qt6 REQUIRED COMPONENTS DBus)
+  target_link_libraries(napkin_ui PUBLIC Qt6::DBus)
+  target_compile_definitions(napkin_ui PUBLIC NAPKIN_HAVE_PORTAL)
+endif()
 
 # --- application --------------------------------------------------------------
 qt_add_executable(napkin src/main.cpp)
@@ -209,7 +240,7 @@ target_link_libraries(bench_load PRIVATE napkin_ui Qt6::Widgets)
 target_include_directories(bench_load PRIVATE src)
 
 # GUI tests drive the real widget tree offscreen.
-foreach(t test_editing test_sweep test_lifecycle test_images test_multiitem test_review_fixes test_canvas test_theme test_chips test_accessibility test_tray test_calculate)
+foreach(t test_editing test_sweep test_lifecycle test_images test_multiitem test_review_fixes test_canvas test_theme test_chips test_accessibility test_tray test_calculate test_single_instance)
   qt_add_executable(${t} tests/${t}.cpp)
   target_link_libraries(${t} PRIVATE napkin_ui Qt6::Test)
   add_test(NAME ${t} COMMAND ${t})

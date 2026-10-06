@@ -18,21 +18,25 @@ public:
 
     explicit Autosave(QObject* parent = nullptr);
 
-    void setFlushHandler(std::function<void()> handler) { flush_ = std::move(handler); }
+    // `timed` is true when a timer fired — typing is going on — and false for
+    // flushNow(), one of the moments the text must have landed before it
+    // returns. Only a timed flush may write in the background.
+    void setFlushHandler(std::function<void(bool timed)> handler) { flush_ = std::move(handler); }
 
     // Content changed. Restarts the debounce; leaves the max-delay running.
     void noteChange();
 
-    // Write now if anything is pending. Called on collapse, buffer switch,
-    // window blur and close — the moments where waiting would be indefensible.
+    // Write now, and wait for anything already being written. Called on
+    // collapse, buffer switch, window blur and close — the moments where
+    // waiting would be indefensible.
     void flushNow();
 
     bool isDirty() const { return dirty_; }
 
 private:
-    void doFlush();
+    void doFlush(bool timed);
 
-    std::function<void()> flush_;
+    std::function<void(bool)> flush_;
     QTimer debounce_;
     QTimer maxDelay_;
     bool   dirty_ = false;

@@ -149,6 +149,43 @@ private slots:
         QVERIFY(p.primary.contains(QStringLiteral("example.com")));
     }
 
+
+    // --- the latest addition (test user, 2026-10-06) --------------------------
+    static Item withId(Item i, ItemId id) { i.id = id; return i; }
+
+    void theLatestAdditionIsShownBesideTheTitle()
+    {
+        const Item title = withId(Item::makeText("Groceries"), 1);
+        const Item milk = withId(Item::makeText("milk\nsemi-skimmed"), 3);
+        const auto p = derivePreview({title}, 3, 0, {milk, withId(Item::makeText("eggs"), 2)});
+        QCOMPARE(p.primary, QStringLiteral("Groceries"));
+        QCOMPARE(p.latest, QStringLiteral("milk"));
+    }
+
+    void theLatestIsNotTheTitleTwice()
+    {
+        // The title note was the last thing edited: say what came before it.
+        const Item title = withId(Item::makeText("Groceries"), 1);
+        const auto p = derivePreview({title}, 2, 0, {title, withId(Item::makeText("eggs"), 2)});
+        QCOMPARE(p.latest, QStringLiteral("eggs"));
+    }
+
+    void aSingleItemHasNoLatestLine()
+    {
+        const Item only = withId(Item::makeText("alone"), 1);
+        QVERIFY(derivePreview({only}, 1, 0, {only}).latest.isEmpty());
+    }
+
+    void aLatestLinkOrImageReadsAsOne()
+    {
+        const Item title = withId(Item::makeText("Research"), 1);
+        const Item link = withId(Item::makeText("https://www.example.org/paper?id=4"), 2);
+        QVERIFY(derivePreview({title}, 2, 0, {link}).latest.startsWith(QStringLiteral("www.example.org/paper")));
+        Item shot = withId(Item::makeImage("h", 10, 10, 1), 3);
+        QCOMPARE(derivePreview({title}, 2, 1, {shot}).latest, QStringLiteral("Image"));
+        shot.sourceName = QStringLiteral("chart.png");
+        QCOMPARE(derivePreview({title}, 2, 1, {shot}).latest, QStringLiteral("chart.png"));
+    }
 };
 
 QTEST_APPLESS_MAIN(TestPreview)

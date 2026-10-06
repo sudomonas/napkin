@@ -26,9 +26,14 @@ private:
     struct Base {
         QTemporaryDir dir;
         napkin::Database db;
-        Base() { db.open(QStringLiteral(":memory:")); }
+        // On disk only when a test needs a second connection to see the same
+        // database — the background saver's does.
+        explicit Base(bool onDisk)
+        {
+            db.open(onDisk ? dir.path() + QStringLiteral("/napkin.db") : QStringLiteral(":memory:"));
+        }
     };
-    Base base_;
+    Base base_{false};
 
 public:
     napkin::Database& db = base_.db;
@@ -40,6 +45,8 @@ public:
     napkin::MainWindow window{db, buffers, items, service, blobs, thumbs};
 
     GuiFixture() { window.show(); }
+    struct OnDisk {};
+    explicit GuiFixture(OnDisk) : base_(true) { window.show(); }
 
     napkin::BufferListModel* model() { return window.findChild<napkin::BufferListModel*>(); }
     napkin::BufferListView*  view()  { return window.findChild<napkin::BufferListView*>(); }

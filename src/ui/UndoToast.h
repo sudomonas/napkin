@@ -1,7 +1,10 @@
 #pragma once
 #include "../domain/Types.h"
+#include <QDeadlineTimer>
+#include <QSet>
 #include <QWidget>
 #include <functional>
+#include <vector>
 
 class QLabel;
 class QPushButton;
@@ -13,6 +16,13 @@ namespace napkin {
 // thinking, accidental deletion is the fastest way to lose a user's trust — so
 // every delete is undoable for a few seconds, in one click, without hunting for
 // the trash.
+//
+// Offers STACK. Each one used to replace the last, so two deletes in quick
+// succession left only the second undoable — the first was gone the moment the
+// second was made, however fast you reached for Ctrl+Z. Now each offer lives
+// out its own eight seconds; the toast shows the newest and says how many are
+// behind it, and Undo works back through them newest first, as undo does
+// everywhere else.
 class UndoToast : public QWidget {
     Q_OBJECT
 public:
@@ -24,22 +34,34 @@ public:
 
     explicit UndoToast(QWidget* parent = nullptr);
 
-    // Replaces any offer already showing: the most recent delete is the one the
-    // user is most likely to have meant. The action is a closure so buffer-level
-    // and item-level undo share one widget rather than one growing an enum.
-    void offer(const QString& message, std::function<void()> undo);
-    // A message with nothing to undo — "Restored to …". No Undo button.
+    // Adds an offer on top of any already showing. The action is a closure so
+    // buffer-level and item-level undo share one widget rather than one growing
+    // an enum. `protects` are blobs the undo would need back; see
+    // protectedHashes().
+    // Returns the offer's id, for withdraw(); 0 when there was nothing to undo.
+    int  offer(const QString& message, std::function<void()> undo,
+               const QSet<QString>& protects = {});
+    // Takes one offer back without running it — for when what it would undo
+    // has been finished some other way. The others stay.
+    void withdraw(int id);
+    // A message with nothing to undo — "Restored to …". No Undo button, and the
+    // offers behind it keep their countdowns.
     void inform(const QString& message);
+    // Drops every offer. For when what they would undo no longer exists.
     void dismiss();
-    // Ctrl+Z. The toast was the only way to undo a delete, and eight seconds
-    // was not always enough to read it and reach the button (second usability
-    // test). Returns whether there was anything to undo.
+    // Ctrl+Z. Undoes the newest offer and leaves the rest. Returns whether there
+    // was anything to undo.
     bool undoNow();
 
     // Re-centres without touching the message or restarting the countdown.
     void reposition();
 
-    bool hasOffer() const { return bool(undo_); }
+    bool hasOffer() const { return !offers_.empty(); }
+    void setVisibleMsForTest(int ms) { visibleMs_ = ms; }
+    int  offerCount() const { return int(offers_.size()); }
+    // Every blob some live offer would put back. A sweep must leave these
+    // alone: their rows are gone, so to the sweep they look like orphans.
+    QSet<QString> protectedHashes() const;
 
 signals:
     void undone();
@@ -53,18 +75,31 @@ protected:
     void leaveEvent(QEvent* e) override;
 
 private:
-    // Puts back the offer an inform() was shown over, with the rest of its
-    // countdown. A no-op when nothing was held.
-    void restoreHeldOffer();
+    struct Offer {
+        int id = 0;
+        QString message;
+        std::function<void()> undo;
+        QSet<QString> protects;
+        QDeadlineTimer deadline;   // running, or...
+        qint64 remainingMs = 0;    // ...frozen while paused
+    };
+
+    void pause();
+    void resume();
+    void expireDue();
+    // Shows the newest offer, or hides when there is none.
+    void showTop();
+    void scheduleNextExpiry();
 
     QLabel*      message_ = nullptr;
     QPushButton* undoButton_ = nullptr;
-    QTimer*      timer_   = nullptr;
+    QTimer*      timer_   = nullptr;   // fires at the earliest deadline
     QTimer*      informTimer_ = nullptr;
-    std::function<void()> undo_;
-    // The offer currently standing behind an informational message, if any.
-    QString heldMessage_;
-    int     heldMs_ = 0;
+    std::vector<Offer> offers_;        // oldest first
+    bool hovered_ = false;
+    bool informing_ = false;
+    int  nextId_ = 1;
+    int  visibleMs_ = kVisibleMs;
 };
 
 }  // namespace napkin

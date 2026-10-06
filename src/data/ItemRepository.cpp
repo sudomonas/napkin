@@ -121,6 +121,18 @@ std::vector<Item> ItemRepository::previewHead(BufferId bufferId, int limit)
     return out;
 }
 
+std::vector<Item> ItemRepository::latestItems(BufferId bufferId, int limit)
+{
+    Statement s(db_, "SELECT id, buffer_id, position, type, created_at,"
+                     " substr(text, 1, 2048), blob_hash,"
+                     " source_name, width, height, byte_size, mime, animated, modified_at FROM items"
+                     " WHERE buffer_id = ? ORDER BY modified_at DESC, id DESC LIMIT ?");
+    s.bind(1, bufferId).bind(2, limit);
+    std::vector<Item> out;
+    while (s.step()) out.push_back(readItem(s));
+    return out;
+}
+
 int ItemRepository::countForBuffer(BufferId bufferId)
 {
     Statement s(db_, "SELECT COUNT(*) FROM items WHERE buffer_id = ?");

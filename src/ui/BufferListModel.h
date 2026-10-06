@@ -36,6 +36,7 @@ public:
         SectionFirstRole,   // this row starts a section
         SectionNameRole,    // "PINNED" / "RECENT" / "TRASH" / "RESULTS"
         SnippetRole,        // why this buffer matched, when searching
+        LatestRole,         // the most recent addition, when it is not the title
         IsOlderRole,        // past the age cutoff, so drawn quieter
     };
 

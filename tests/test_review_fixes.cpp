@@ -1,4 +1,5 @@
 #include "GuiFixture.h"
+#include "../src/domain/Clock.h"
 #include "../src/media/BlobGc.h"
 #include "../src/media/ImageFormats.h"
 #include "../src/ui/ItemCanvas.h"
@@ -561,6 +562,56 @@ private slots:
         QCOMPARE(f.model()->rowCount(), before);
     }
 
+    // Paste into a napkin further down the list and it stayed where it was.
+    // The paste bumped modified_at, and the card's time said "just now", but
+    // nothing re-sorted the list — so a napkin from last year could sit under
+    // OLDER claiming to be the newest thing there. The global shortcut always
+    // pastes into the open napkin, which made this the common case.
+    void pastingTextIntoAnOlderNapkinMovesItToTheTop()
+    {
+        GuiFixture f;
+        const auto old = f.seed("from last year");
+        f.buffers.setModifiedAt(old, nowMs() - 365 * kMsPerDay);
+        // The others an hour old, so a paste in the same millisecond as a seed
+        // cannot tie with it — a tie sorts by id, and this test flaked on it.
+        f.buffers.setModifiedAt(f.seed("yesterday's list"), nowMs() - 3600 * 1000);
+        f.buffers.setModifiedAt(f.seed("this morning"), nowMs() - 3600 * 1000);
+        f.model()->reload();
+        QVERIFY(f.model()->rowForId(old) > 0);
+        QCOMPARE(f.model()->index(f.model()->rowForId(old), 0)
+                     .data(BufferListModel::SectionNameRole).toString(), QStringLiteral("OLDER"));
+        f.select(old);
+
+        QApplication::clipboard()->setText(QStringLiteral("pasted today"));
+        f.window.pasteFromClipboard();
+
+        QCOMPARE(f.model()->rowForId(old), 0);
+        QCOMPARE(f.model()->index(0, 0).data(BufferListModel::SectionNameRole).toString(),
+                 QStringLiteral("RECENT"));
+        // Moving it must not lose it: still selected, still on the board.
+        QCOMPARE(f.model()->idAt(f.view()->currentIndex().row()), old);
+        QCOMPARE(f.items.countForBuffer(old), 2);
+        QCOMPARE(f.canvas()->findChildren<TextItemCard*>().size(), 2);
+    }
+
+    void pastingAnImageIntoAnOlderNapkinMovesItToTheTop()
+    {
+        GuiFixture f;
+        const auto old = f.seed("needs a picture");
+        f.buffers.setModifiedAt(old, nowMs() - kMsPerDay);
+        f.buffers.setModifiedAt(f.seed("newer"), nowMs() - 3600 * 1000);
+        f.model()->reload();
+        QCOMPARE(f.model()->rowForId(old), 1);
+        f.select(old);
+
+        QApplication::clipboard()->setImage(QImage::fromData(png(8, 8)));
+        f.window.pasteFromClipboard();
+
+        QCOMPARE(f.items.countForBuffer(old), 2);
+        QCOMPARE(f.model()->rowForId(old), 0);
+        QCOMPARE(f.model()->idAt(f.view()->currentIndex().row()), old);
+    }
+
     void savingAnEditAcknowledgesItselfAndResetsTheAge()
     {
         GuiFixture f;
@@ -601,9 +652,17 @@ private slots:
         f.model()->reload();
         f.select(id);
 
+        // The picture's hairline edge is drawn in the theme's text colour and
+        // baked into the shown pixmap. (It used to be the caption's colour that
+        // was checked; the caption is gone since the 2026-10-06 mockup.)
         auto* card = f.canvas()->findChildren<ImageItemCard*>().first();
-        auto* caption = card->findChildren<QLabel*>().last();
-        const QColor before = caption->palette().color(QPalette::WindowText);
+        auto* view = card->findChildren<QLabel*>().first();
+        auto edgePixel = [view] {
+            const QImage img = view->pixmap().toImage();
+            return img.isNull() ? QColor() : img.pixelColor(img.width() / 2, 0);
+        };
+        QTRY_VERIFY(edgePixel().isValid());
+        const QColor before = edgePixel();
 
         QPalette dark;
         dark.setColor(QPalette::Base, QColor(27, 30, 32));
@@ -613,7 +672,8 @@ private slots:
 
         // Colours captured at construction went stale on a theme change: card
         // text stayed the old colour until the buffer was reopened.
-        QVERIFY(caption->palette().color(QPalette::WindowText) != before);
+        QVERIFY2(edgePixel() != before,
+                 qPrintable(QStringLiteral("edge stayed %1").arg(before.name())));
     }
 
     void highlightingSearchTermsDoesNotMarkCardsAsEdited()

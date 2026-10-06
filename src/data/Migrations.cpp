@@ -140,6 +140,13 @@ constexpr const char* kV6 = R"SQL(
 ALTER TABLE buffers ADD COLUMN restores_to INTEGER;
 )SQL";
 
+// --- v7: an optional name ------------------------------------------------------
+// A napkin is titled by what was first put on it, and still is. A test user
+// asked to be able to name one (2026-10-06); NULL means "as before".
+constexpr const char* kV7 = R"SQL(
+ALTER TABLE buffers ADD COLUMN name TEXT;
+)SQL";
+
 struct Migration {
     int version;
     const char* sql;
@@ -152,6 +159,7 @@ constexpr std::array kMigrations{
     Migration{4, kV4},
     Migration{5, kV5},
     Migration{6, kV6},
+    Migration{7, kV7},
 };
 
 }  // namespace

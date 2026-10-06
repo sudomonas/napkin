@@ -90,6 +90,16 @@ WelcomeView::WelcomeView(QWidget* parent) : QWidget(parent)
     column->addWidget(buildShortcutRow(tr("Ctrl+F"), tr("Search everything"),
                                        SIGNAL(searchRequested())), 0, Qt::AlignHCenter);
 
+    // The keys above get you started; the rest — Pin, Keep, Calculate, the
+    // Trash's undo — is invisible until someone shows you, so offer to.
+    column->addSpacing(22);
+    auto* tour = new QPushButton(tr("Take the tour"));
+    tour->setObjectName(QStringLiteral("tourButton"));
+    tour->setProperty("napkinShape", QStringLiteral("pill"));
+    tour->setCursor(Qt::PointingHandCursor);
+    connect(tour, &QPushButton::clicked, this, &WelcomeView::tourRequested);
+    column->addWidget(tour, 0, Qt::AlignHCenter);
+
     column->addSpacing(34);
     footer_ = new QLabel(tr("Nothing here needs a name, a folder or a tag.\n"
                             "Everything stays on this machine."));

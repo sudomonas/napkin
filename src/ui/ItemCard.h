@@ -75,7 +75,7 @@ protected:
     void changeEvent(QEvent* e) override;
 
     // Subclasses call this once, with the widget that fills the content area.
-    void setContent(QWidget* content, const QString& copyLabel);
+    void setContent(QWidget* content, const QString& copyLabel, bool image = false);
     virtual int contentHeightForWidth(int innerWidth) const = 0;
     int chromeHeight() const;
 
@@ -88,6 +88,7 @@ protected:
 
     Item item_;
     mutable bool clipped_ = false;
+    bool image_ = false;   // framed picture: tokens::cardInset(true)
 
 private:
     CardFooter* footer_ = nullptr;
@@ -101,10 +102,29 @@ class TextItemCard : public ItemCard {
 public:
     explicit TextItemCard(const Item& item, QWidget* parent = nullptr);
 
+    // Always the whole note, even when the editor holds only its top.
     QString text() const;
+    bool holdsWholeTextForTest() const { return !partial_; }
     QString asPlainText() const override { return text(); }
     bool isDirty() const { return dirty_; }
-    void markClean() { dirty_ = false; }
+    // Counts edits, so a save that finishes later can tell whether it saved
+    // the text as it is now or as it was when the save began.
+    quint64 editGeneration() const { return generation_; }
+    static quint64 nextEditGeneration();
+    // This card replaces one the board rebuilt while it held unsaved text,
+    // which this card was built with. It is unsaved here too.
+    void carryOver(quint64 generation);
+    // What was saved is now the text an edit is judged against.
+    void markClean() { if (dirty_) lastText_ = text(); dirty_ = false; }
+    // The same, for a save that took `saved` at edit `generation` and has only
+    // now finished: clean only if nothing was typed in the meantime.
+    bool markCleanIfUnchanged(quint64 generation, const QString& saved)
+    {
+        if (!dirty_ || generation != generation_) return false;
+        lastText_ = saved;
+        dirty_ = false;
+        return true;
+    }
     void setItemId(ItemId id) { item_.id = id; }
     void focusText();
     void beginEditing(bool moveToEnd = true);
@@ -163,7 +183,15 @@ private:
     bool            chipShown_ = false;
     class MatchHighlighter* highlighter_ = nullptr;
     bool dirty_ = false;
-    QString lastText_;   // to tell a real edit from a reformat
+    QString lastText_;   // to tell a real edit from a reformat; see the constructor
+    bool    wasLong_ = false;   // over kMeasureLimit at the last edit
+    quint64 generation_ = 0;
+
+    // A long note's editor holds only its top until it is edited; whole_ is
+    // the rest, and text() answers from it. See the constructor.
+    void loadWholeText();
+    QString whole_;
+    bool    partial_ = false;
 
     // Measuring happens against our own document, not the editor's. See the
     // note on contentHeightForWidth.
@@ -178,6 +206,8 @@ public:
                   QWidget* parent = nullptr);
 
     QString asPlainText() const override;
+    // The preview is still being made on a worker; a placeholder is showing.
+    bool isLoadingPreview() const { return loading_; }
 
 protected:
     int contentHeightForWidth(int innerWidth) const override;
@@ -186,11 +216,15 @@ protected:
     void resizeEvent(QResizeEvent* e) override;
 
 private:
+    // The board preview's bounding box: a full-width card at 2x.
+    static constexpr int kPreviewSize = 920;
     void rescale();
+    void showSource();
 
     QPixmap source_;
+    bool    fileExists_ = false;
+    bool    loading_ = false;   // the preview is being made on a worker
     QLabel* view_ = nullptr;
-    QLabel* caption_ = nullptr;
 };
 
 }  // namespace napkin

@@ -17,6 +17,9 @@ public:
 
     void setPinned(BufferId id, bool pinned);
     void setKept(BufferId id, bool kept);
+    // Empty clears it, and the napkin is titled from its contents again.
+    static constexpr int kMaxNameLength = 120;
+    void setName(BufferId id, const QString& name);
 
     // Ordinary trash. Refuses a kept buffer and returns false — the caller must
     // obtain confirmation and call moveToTrashConfirmed instead. Making the

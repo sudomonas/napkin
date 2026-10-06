@@ -5,10 +5,12 @@
 #include "data/Database.h"
 #include "data/ItemRepository.h"
 #include "domain/BufferService.h"
-#include "media/BlobGc.h"
 #include "media/BlobStore.h"
 #include "media/Thumbnailer.h"
 #include "ui/MainWindow.h"
+#include "ui/TourDialog.h"
+
+#include <QTimer>
 #include "ui/SettingsDialog.h"
 
 #include <QApplication>
@@ -54,15 +56,7 @@ int main(int argc, char** argv)
     }
     QApplication::setWindowIcon(icon);
 
-    Database db;
-    BufferRepository buffers(db);
-    ItemRepository items(db);
-
-    try {
-        paths::ensureDirs();   // the instance socket lives in here, so first
-        db.open(paths::databaseFile());
-        paths::secureDatabaseFiles();  // the files exist only now, on a first run
-    } catch (const std::exception& e) {
+    auto cannotStart = [](const std::exception& e) {
         // SPEC.md §14: plain language, no stack traces, content accounted for.
         QMessageBox::critical(
             nullptr, QStringLiteral("Napkin cannot start"),
@@ -70,11 +64,45 @@ int main(int argc, char** argv)
                            "No data has been changed.\n\n%1")
                 .arg(QString::fromUtf8(e.what())));
         return 1;
+    };
+
+    try {
+        paths::ensureDirs();   // the instance lock lives in here, so first
+    } catch (const std::exception& e) {
+        return cannotStart(e);
     }
 
+    // Before the database is opened, not after: a second launch used to open
+    // the file and run its migrations against a database another Napkin was
+    // using, and only then discover it should not be running at all.
     SingleInstance instance;
-    if (!instance.acquire())
-        return 0;  // an existing Napkin was asked to raise itself
+    switch (instance.acquire()) {
+    case SingleInstance::Outcome::Primary:
+        break;
+    case SingleInstance::Outcome::HandedOff:
+        return 0;   // the running Napkin was asked to raise itself
+    case SingleInstance::Outcome::NotResponding:
+        // Saying so, rather than vanishing: from the outside a launch that
+        // quietly exits looks exactly like Napkin being broken.
+        QMessageBox::warning(
+            nullptr, QStringLiteral("Napkin is already running"),
+            QStringLiteral("Napkin is already running, but it did not answer when asked "
+                           "to show its window.\n\nSwitch to it, or close it and try "
+                           "again. A second copy has not been started, so nothing has "
+                           "been changed."));
+        return 1;
+    }
+
+    Database db;
+    BufferRepository buffers(db);
+    ItemRepository items(db);
+
+    try {
+        db.open(paths::databaseFile());
+        paths::secureDatabaseFiles();  // the files exist only now, on a first run
+    } catch (const std::exception& e) {
+        return cannotStart(e);
+    }
 
     SettingsDialog::applyAppearance();   // before any window exists, so nothing flashes
     SettingsDialog::followSystemChanges();
@@ -84,11 +112,17 @@ int main(int argc, char** argv)
 
     BlobStore blobs(paths::blobsDir());
     Thumbnailer thumbs(paths::thumbsDir(), blobs);
-    reconcileBlobs(items, blobs, paths::thumbsDir());  // collect orphans and stale thumbnails
-
     MainWindow window(db, buffers, items, service, blobs, thumbs);
+    // Orphans and stale thumbnails, collected in the background: walking the
+    // whole store before the window appeared made startup grow with it.
+    window.sweepBlobs();
     QObject::connect(&instance, &SingleInstance::raiseRequested,
                      &window, &MainWindow::raiseFromOtherInstance);
     window.show();
+    // Once, on the first launch, after the window is on screen so the tour has
+    // something behind it. Here and not in MainWindow, so a window built by a
+    // test never meets a modal dialog.
+    if (!TourDialog::seen())
+        QTimer::singleShot(400, &window, &MainWindow::showTour);
     return app.exec();
 }

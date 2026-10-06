@@ -23,6 +23,7 @@ signals:
     void newTextRequested();
     void addImageRequested();
     void searchRequested();
+    void tourRequested();   // "Take the tour"
     // Someone started typing on the start page, which says "dump text here":
     // the text should become a note in a new napkin, not vanish.
     void textTyped(const QString& text);

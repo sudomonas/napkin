@@ -6,7 +6,10 @@
 #include <QFont>
 #include <QFontMetrics>
 #include <QFontMetricsF>
+#include <QElapsedTimer>
 #include <QTextDocument>
+#include <algorithm>
+#include <limits>
 
 namespace napkin {
 namespace {
@@ -48,8 +51,9 @@ int BoardLayout::heightFor(const Item& item, int columnWidth, bool* clipped) con
         }
     }
 
-    const int inner = std::max(40, columnWidth - kCardPad * 2);
-    const int chrome = cardChromeHeight(body_ ? *body_ : QFont());
+    const bool image = item.type == ItemType::Image;
+    const int inner = std::max(40, columnWidth - cardInset(image) * 2);
+    const int chrome = cardChromeHeight(body_ ? *body_ : QFont(), image);
 
     int content = 0;
     if (item.type == ItemType::Text && links::soleUrl(item.text)) {
@@ -76,15 +80,10 @@ int BoardLayout::heightFor(const Item& item, int columnWidth, bool* clipped) con
     } else {
         // From the stored dimensions: no file is opened and no image decoded
         // just to find out how tall a card is.
-        const QFontMetrics fm(body_ ? *body_ : QFont());
-        const int captionH = fm.height() + 6;
-        if (item.width > 0 && item.height > 0) {
-            const int drawn = item.height * std::min(inner, item.width)
-                              / std::max(1, item.width);
-            content = drawn + captionH;
-        } else {
-            content = 96 + captionH;
-        }
+        if (item.width > 0 && item.height > 0)
+            content = item.height * std::min(inner, item.width) / std::max(1, item.width);
+        else
+            content = 96;
     }
     const int natural = content + chrome;
     int height = std::clamp(natural, kCardMinHeight, kCardMaxHeight);
@@ -113,7 +112,7 @@ int BoardLayout::heightFor(const Item& item, int columnWidth, bool* clipped) con
     return measured.height;
 }
 
-void BoardLayout::rebuild(const std::vector<Item>& items)
+void BoardLayout::reset(const std::vector<Item>& items)
 {
     placements_.clear();
     const int usable = std::max(kCardMinWidth, viewportWidth_ - kPadX * 2);
@@ -128,23 +127,81 @@ void BoardLayout::rebuild(const std::vector<Item>& items)
                               kCardMinWidth, kCardMaxWidth);
 
     columns_ = columns;
-    std::vector<int> bottoms(size_t(columns), kPadTop);
+    bottoms_.assign(size_t(columns), kPadTop);
+    itemCount_ = items.size();
+    placedHeight_ = 0;
     placements_.reserve(items.size());
-    for (const auto& item : items) {
-        size_t shortest = 0;
-        for (size_t i = 1; i < bottoms.size(); ++i)
-            if (bottoms[i] < bottoms[shortest]) shortest = i;
+    updateTotalHeight();
+}
 
-        bool clipped = false;
-        const int h = heightFor(item, columnWidth_, &clipped);
-        const int x = kPadX + int(shortest) * (columnWidth_ + kCardGap);
-        placements_.push_back({item.id, QRect(x, bottoms[shortest], columnWidth_, h), clipped});
-        bottoms[shortest] += h + kCardGap;
+void BoardLayout::placeNext(const Item& item)
+{
+    size_t shortest = 0;
+    for (size_t i = 1; i < bottoms_.size(); ++i)
+        if (bottoms_[i] < bottoms_[shortest]) shortest = i;
+
+    bool clipped = false;
+    const int h = heightFor(item, columnWidth_, &clipped);
+    const int x = kPadX + int(shortest) * (columnWidth_ + kCardGap);
+    placements_.push_back({item.id, QRect(x, bottoms_[shortest], columnWidth_, h), clipped});
+    bottoms_[shortest] += h + kCardGap;
+    placedHeight_ += h + kCardGap;
+}
+
+void BoardLayout::updateTotalHeight()
+{
+    int deepest = kPadTop;
+    for (int b : bottoms_) deepest = std::max(deepest, b);
+    if (!complete() && !placements_.empty()) {
+        // The rest, at the average height of what has been measured, shared
+        // across the columns.
+        const qint64 remaining = qint64(itemCount_ - placements_.size());
+        const qint64 average = placedHeight_ / qint64(placements_.size());
+        int shallowest = deepest;
+        for (int b : bottoms_) shallowest = std::min(shallowest, b);
+        deepest = std::max<qint64>(deepest,
+                                   shallowest + remaining * average / std::max(1, columns_));
     }
+    totalHeight_ = deepest + kPadTop - kCardGap;
+}
 
-    totalHeight_ = kPadTop;
-    for (int b : bottoms) totalHeight_ = std::max(totalHeight_, b);
-    totalHeight_ += kPadTop - kCardGap;
+bool BoardLayout::placeThrough(const std::vector<Item>& items, int y)
+{
+    const size_t before = placements_.size();
+    // The next card goes into the shortest column, so once every column
+    // reaches past y nothing still to come can start above it.
+    auto shallowest = [this] { return *std::min_element(bottoms_.begin(), bottoms_.end()); };
+    while (placements_.size() < itemCount_ && placements_.size() < items.size()
+           && shallowest() <= y)
+        placeNext(items[placements_.size()]);
+    if (placements_.size() == before) return false;
+    updateTotalHeight();
+    return true;
+}
+
+bool BoardLayout::placeFor(const std::vector<Item>& items, int budgetMs)
+{
+    const size_t before = placements_.size();
+    QElapsedTimer clock;
+    clock.start();
+    while (placements_.size() < itemCount_ && placements_.size() < items.size()) {
+        placeNext(items[placements_.size()]);
+        if (clock.elapsed() >= budgetMs) break;
+    }
+    if (placements_.size() == before) return false;
+    updateTotalHeight();
+    return true;
+}
+
+void BoardLayout::placeAll(const std::vector<Item>& items)
+{
+    placeThrough(items, std::numeric_limits<int>::max());
+}
+
+void BoardLayout::rebuild(const std::vector<Item>& items)
+{
+    reset(items);
+    placeAll(items);
 }
 
 std::vector<int> BoardLayout::indicesIn(const QRect& visible, int overscan) const

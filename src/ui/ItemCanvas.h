@@ -11,6 +11,7 @@ class QContextMenuEvent;
 #include <vector>
 
 class QLabel;
+class QTimer;
 
 
 namespace napkin {
@@ -62,9 +63,13 @@ public:
     struct DirtyText {
         ItemId  id;      // kNoItem => new text with no row yet
         QString text;
+        quint64 generation = 0;
     };
     std::vector<DirtyText> dirtyText() const;
     void markClean();
+    // A background save of `id` has landed. Cleans the card only if it has not
+    // been edited since; answers whether it did.
+    bool markSavedIfUnchanged(ItemId id, quint64 generation, const QString& saved);
     // Tells the cards that just saved to say so.
     void acknowledgeSaved(const QList<ItemId>& ids, Timestamp when);
     // Binds the one unwritten card to the row that was just created for it.
@@ -90,6 +95,7 @@ public:
     void moveCursorSpatially(BoardLayout::Step step, Qt::KeyboardModifiers modifiers);
     void setCursorTo(int index, Qt::KeyboardModifiers modifiers);
     int  cursorIndex() const { return cursor_; }
+    const BoardLayout& boardForTest() const { return board_; }
 
     QList<ItemId> selection() const;
     bool hasSelection() const { return !selected_.isEmpty(); }
@@ -188,6 +194,10 @@ private:
     ItemCard* cardAt(const QPoint& viewportPos) const;
     void applySelection(ItemId id, Qt::KeyboardModifiers modifiers);
     void relayout();
+    void resizeBody();
+    // Places every card that has not been placed yet. Anything that needs the
+    // geometry of an arbitrary card — the keyboard cursor — calls this first.
+    void finishLayout();
     int  stableWidth() const;
 
     // Builds widgets for the visible band and destroys the rest. A buffer with
@@ -196,6 +206,14 @@ private:
     void syncVisibleCards();
     void applyFilter();
     void syncCardText(TextItemCard* card);
+    // Unsaved text, by item, held across a rebuild of the board's cards until
+    // a card for it exists again or it is saved. See setItems().
+    struct Carried {
+        QString text;
+        quint64 generation = 0;
+    };
+    QHash<ItemId, Carried> carried_;
+    void carryUnsaved();
     ItemCard* cardFor(const Item& item);
 
     Thumbnailer& thumbs_;
@@ -204,6 +222,7 @@ private:
     bool emptyBufferShown_ = false;   // ...and it has nothing on it yet
     QWidget*     body_ = nullptr;
     BoardLayout    board_;
+    QTimer*        layoutTimer_ = nullptr;
     std::vector<Item> allItems_;              // everything in the buffer
     std::vector<Item> items_;                 // what the board is showing
     QString           query_;

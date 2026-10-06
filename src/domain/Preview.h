@@ -21,6 +21,11 @@ struct ImageRef {
 struct BufferPreview {
     QString primary;     // the line the card leads with
     QString secondary;   // quiet detail line; may be empty
+    // The most recent addition, when it is not the item the title came from.
+    // The title is deliberately the FIRST thing put down (§7), so without this
+    // a list row never showed what was last added — which is what a test user
+    // looked for first (2026-10-06).
+    QString latest;
     int     itemCount  = 0;
     int     imageCount = 0;
     std::vector<ImageRef> thumbs;   // first kMaxCardThumbs images, in order
@@ -32,7 +37,11 @@ struct BufferPreview {
 // `head` is the first few items of the buffer in position order; `totalCount`
 // is how many it actually has. Only the head is loaded so a list of 5000
 // buffers never reads every item (§12).
-BufferPreview derivePreview(const std::vector<Item>& head, int totalCount, int imageCount);
+// `latest` is the top of the board, newest first; may be empty.
+// `name` is the user's own, if they gave one: it is the title, and the latest
+// line then never skips the item the title would otherwise have come from.
+BufferPreview derivePreview(const std::vector<Item>& head, int totalCount, int imageCount,
+                            const std::vector<Item>& latest = {}, const QString& name = {});
 
 // How many items the preview needs: enough to find an image a line or two down.
 inline constexpr int kPreviewHeadSize = 8;

@@ -4,6 +4,8 @@
 
 #include <QCloseEvent>
 #include <QSettings>
+#include <QClipboard>
+#include <QLabel>
 #include <QtTest>
 
 using namespace napkin;
@@ -65,6 +67,54 @@ private slots:
         QSettings().remove(QStringLiteral("behaviour/keepInTray"));
     }
 
+
+    // --- the global capture shortcut ---------------------------------------------
+    // What the shortcut does once the desktop reports it. The portal half needs
+    // a real desktop and a person to press the key; this half does not.
+    void theCaptureShortcutIsOffUntilAskedFor()
+    {
+        QVERIFY(!napkin::SettingsDialog::captureShortcut());
+    }
+
+    void theShortcutPastesOntoTheOpenNapkinAndSaysWhich()
+    {
+        GuiFixture f;
+        f.window.activateWindow();
+        const auto id = f.seed("Research notes");
+        f.model()->reload();
+        f.select(id);
+        QApplication::clipboard()->setText(QStringLiteral("copied from the browser"));
+
+        f.window.pasteFromGlobalShortcut();
+        QTRY_COMPARE_WITH_TIMEOUT(f.items.countForBuffer(id), 2, 3000);
+        bool landed = false;
+        for (const auto& item : f.items.listForBuffer(id))
+            if (item.text == QStringLiteral("copied from the browser")) landed = true;
+        QVERIFY(landed);
+        // Said in the capture window, which then closes by itself; the main
+        // window is never raised (on Wayland it cannot be, from the background).
+        auto* capture = qobject_cast<QLabel*>(f.window.captureWindowForTest());
+        QVERIFY(capture);
+        QTRY_VERIFY_WITH_TIMEOUT(capture->text().contains(QStringLiteral("Research notes")), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!f.window.captureWindowForTest(), 5000);
+    }
+
+    void anEmptyClipboardSaysSoRatherThanClaimingAPaste()
+    {
+        GuiFixture f;
+        f.window.activateWindow();
+        const auto id = f.seed("Research notes");
+        f.model()->reload();
+        f.select(id);
+        QApplication::clipboard()->clear();
+
+        f.window.pasteFromGlobalShortcut();
+        auto* capture = qobject_cast<QLabel*>(f.window.captureWindowForTest());
+        QVERIFY(capture);
+        QTRY_VERIFY_WITH_TIMEOUT(capture->text().contains(QStringLiteral("Nothing on the clipboard")),
+                                 3000);
+        QCOMPARE(f.items.countForBuffer(id), 1);
+    }
 };
 
 QTEST_MAIN(TestTray)

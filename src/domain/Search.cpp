@@ -78,6 +78,29 @@ std::vector<SearchHit> searchBuffers(Database& db, const QString& typed, int lim
         hit.rank = s.columnDouble(3);
         hits.push_back(hit);
     }
+
+    // A name the user gave is the first thing they will search for, and it is
+    // not in the item index. Few napkins have one, so they are simply read and
+    // compared: every word typed must appear in the name. A napkin found by
+    // name goes first — the user said what it is called.
+    const QStringList words = typed.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    Statement named(db, "SELECT id, name FROM buffers"
+                        " WHERE deleted_at IS NULL AND name IS NOT NULL");
+    std::vector<SearchHit> byName;
+    while (named.step()) {
+        const QString name = named.columnText(1);
+        bool all = true;
+        for (const auto& w : words) all &= name.contains(w, Qt::CaseInsensitive);
+        if (!all) continue;
+        SearchHit hit;
+        hit.bufferId = named.columnInt64(0);
+        hit.rank = -1e9;
+        for (auto it = hits.begin(); it != hits.end(); ++it)
+            if (it->bufferId == hit.bufferId) { hit = *it; hit.rank = -1e9; hits.erase(it); break; }
+        byName.push_back(hit);
+    }
+    hits.insert(hits.begin(), byName.begin(), byName.end());
+    if (int(hits.size()) > limit) hits.resize(size_t(limit));
     return hits;
 }
 

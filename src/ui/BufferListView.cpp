@@ -3,6 +3,7 @@
 #include "BufferListModel.h"
 
 #include "../media/BlobStore.h"
+#include "../media/Thumbnailer.h"
 
 #include <QContextMenuEvent>
 #include <QCursor>
@@ -30,9 +31,7 @@ BufferListView::BufferListView(Thumbnailer& thumbs, BlobStore& blobs, QWidget* p
     setAttribute(Qt::WA_MacShowFocusRect, false);
 
     delegate_->setThumbnailer(&thumbs);
-
-
-
+    connect(&thumbs, &Thumbnailer::ready, viewport(), qOverload<>(&QWidget::update));
 }
 
 // A single click only selects, so a card can be picked up and acted on — pinned,

@@ -2,13 +2,18 @@
 #include "../src/media/BlobGc.h"
 #include "../src/media/ClipboardContent.h"
 #include "../src/media/ImageFormats.h"
+#include "../src/ui/BufferCardDelegate.h"
+#include "../src/ui/Lightbox.h"
 
 #include <QApplication>
 #include <QBuffer>
 #include <QClipboard>
 #include <QDir>
 #include <QMimeData>
+#include <QLabel>
 #include <QMovie>
+#include <QThread>
+#include <QTimer>
 #include <QtTest>
 
 using namespace napkin;
@@ -24,6 +29,13 @@ QByteArray makePng(int w, int h, QColor colour = Qt::red)
     buffer.open(QIODevice::WriteOnly);
     image.save(&buffer, "PNG");
     return out;
+}
+
+QImage makePngImage()
+{
+    QImage image(8, 8, QImage::Format_RGB32);
+    image.fill(Qt::gray);
+    return image;
 }
 
 QByteArray makeJpeg(int w, int h)
@@ -437,6 +449,324 @@ private slots:
 
         QCOMPARE(f.service.emptyTrash(), 0);   // skipped, not destroyed
         QVERIFY(f.buffers.find(id).has_value());
+    }
+
+    // --- previews are made off the UI thread ----------------------------------
+    // Decoding a board preview cost ~100 ms on the UI thread, per image, and a
+    // board of 500 froze for 14 s on its first scroll. The card must come up
+    // without its picture and have it delivered.
+    void anImageCardAppearsAtOnceAndItsPictureArrivesAfter()
+    {
+        GuiFixture f;
+        const auto stored = f.blobs.store(makePng(800, 600));
+        QVERIFY(stored.ok);
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeImage(stored.hash, 800, 600, stored.byteSize,
+                                               {}, stored.mime));
+        f.model()->reload();
+        f.select(id);
+
+        auto* card = f.canvas()->findChildren<ImageItemCard*>().first();
+        auto* view = card->findChildren<QLabel*>().first();
+        // Nothing has run the event loop, so nothing can have been delivered:
+        // if the picture is already here, it was decoded on this thread.
+        QVERIFY2(card->isLoadingPreview(), "the preview was made synchronously");
+        QVERIFY(view->text().isEmpty());   // and the wait is not dressed up as an error
+        QVERIFY(!f.thumbs.isIdle());
+        // The placeholder already has the picture's shape, so the caption below
+        // it does not move when the picture lands.
+        const QSize placeholder = view->pixmap().size();
+        QVERIFY(!placeholder.isEmpty());
+
+        QTRY_VERIFY_WITH_TIMEOUT(!card->isLoadingPreview(), 5000);
+        QVERIFY(!view->pixmap().isNull());
+        QCOMPARE(view->pixmap().size(), placeholder);
+    }
+
+    void aPreviewThatCannotBeMadeSaysSoWhenTheWorkerGivesUp()
+    {
+        GuiFixture f;
+        const auto stored = f.blobs.store(makePng(200, 100));
+        QVERIFY(stored.ok);
+        // The file is there, and is not an image any more.
+        {
+            QFile file(f.blobs.pathFor(stored.hash, stored.mime));
+            QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            file.write("not a png at all");
+        }
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeImage(stored.hash, 200, 100, stored.byteSize,
+                                               {}, stored.mime));
+        f.model()->reload();
+        f.select(id);
+
+        auto* view = f.canvas()->findChildren<ImageItemCard*>().first()
+                         ->findChildren<QLabel*>().first();
+        QTRY_VERIFY_WITH_TIMEOUT(!view->text().isEmpty(), 5000);
+        QVERIFY(view->text().contains(QStringLiteral("too large")));
+        QVERIFY(view->pixmap().isNull());
+    }
+
+    void aMissingImageSaysSoWithoutWaitingForAnything()
+    {
+        GuiFixture f;
+        const auto stored = f.blobs.store(makePng(200, 100));
+        QVERIFY(stored.ok);
+        QVERIFY(QFile::remove(f.blobs.pathFor(stored.hash, stored.mime)));
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeImage(stored.hash, 200, 100, stored.byteSize,
+                                               {}, stored.mime));
+        f.model()->reload();
+        f.select(id);
+
+        auto* view = f.canvas()->findChildren<ImageItemCard*>().first()
+                         ->findChildren<QLabel*>().first();
+        QVERIFY(view->text().contains(QStringLiteral("no longer on disk")));
+    }
+
+    void theListPaintsWithoutDecodingAndRepaintsWhenThePictureIsReady()
+    {
+        GuiFixture f;
+        const auto stored = f.blobs.store(makePng(640, 480));
+        QVERIFY(stored.ok);
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeImage(stored.hash, 640, 480, stored.byteSize,
+                                               {}, stored.mime));
+        f.model()->reload();
+
+        // A paint of the list asks for the thumbnail and must not wait for it.
+        f.view()->viewport()->grab();
+        QVERIFY2(!f.thumbs.isIdle(), "painting the list decoded the image itself");
+        f.thumbs.waitForIdle();
+        QPixmap thumb;
+        QCOMPARE(f.thumbs.request(stored.hash, stored.mime, BufferCardDelegate::kThumbSize * 2,
+                                  &thumb), Thumbnailer::State::Ready);
+        QVERIFY(!thumb.isNull());
+    }
+
+    void aSmallImageIsNotBlownUpToMakeItsPreview()
+    {
+        GuiFixture f;
+        const auto stored = f.blobs.store(makePng(40, 30));
+        QVERIFY(stored.ok);
+        const QPixmap preview = f.thumbs.forBlob(stored.hash, stored.mime, 920);
+        QCOMPARE(preview.size(), QSize(40, 30));
+        const QPixmap large = f.thumbs.forBlob(f.blobs.store(makePng(2000, 1000)).hash,
+                                               QStringLiteral("image/png"), 920);
+        QCOMPARE(large.size(), QSize(920, 460));
+    }
+
+    // --- the sweep runs off the UI thread -------------------------------------
+    void emptyingTheTrashReclaimsInTheBackground()
+    {
+        GuiFixture f;
+        const auto stored = f.blobs.store(makePng(300, 200));
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeImage(stored.hash, 300, 200, stored.byteSize,
+                                               {}, stored.mime));
+        QVERIFY(!f.thumbs.forBlob(stored.hash, stored.mime).isNull());   // a thumbnail on disk
+        f.service.trash(id);
+        f.model()->reload();
+
+        f.window.emptyTrashForTest();
+        // Returned without having walked anything: the deciding half runs on
+        // this thread, and nothing has let it run yet.
+        QVERIFY(f.window.sweeperForTest()->isRunning());
+        QVERIFY(f.blobs.exists(stored.hash, stored.mime));
+
+        f.window.sweeperForTest()->waitForIdle();
+        QVERIFY(!f.blobs.exists(stored.hash, stored.mime));
+        QCOMPARE(f.window.sweeperForTest()->lastResult().thumbnailsRemoved, 1);
+    }
+
+    // Content addressing means pasting an image that is already on disk reuses
+    // the file. If that file was an orphan when the walk listed it, a sweep
+    // deciding from the walk's snapshot would delete a picture that has just
+    // been pasted.
+    void aPasteDuringTheSweepKeepsItsPicture()
+    {
+        GuiFixture f;
+        const auto orphan = f.blobs.store(makePng(64, 64, Qt::green));   // no row: an orphan
+        auto* sweeper = f.window.sweeperForTest();
+        sweeper->start();
+        // Sleep WITHOUT running the event loop: the walk is certainly over,
+        // and its result cannot have been acted on yet. A walk that deleted on
+        // its own thread has already done it.
+        QThread::msleep(300);
+        QVERIFY2(f.blobs.exists(orphan.hash, orphan.mime),
+                 "the walking thread deleted files itself");
+
+        const auto id = f.buffers.create();
+        const auto again = f.blobs.store(makePng(64, 64, Qt::green));   // the same bytes
+        QCOMPARE(again.hash, orphan.hash);
+        f.service.appendTo(id, Item::makeImage(again.hash, 64, 64, again.byteSize,
+                                               {}, again.mime));
+
+        sweeper->waitForIdle();
+        QVERIFY2(f.blobs.exists(orphan.hash, orphan.mime),
+                 "the sweep deleted an image that was pasted while it was running");
+    }
+
+    // The protection an undo offer gives is read when the sweep DECIDES, not
+    // when it starts. Driven on a sweeper of its own: in the window, deleting
+    // an image moves it to the trash, whose row keeps the blob alive anyway,
+    // so no window path reaches this with a blob today — which is exactly when
+    // a contract like this is quietly broken.
+    void protectionGivenWhileTheSweepRunsStillCounts()
+    {
+        GuiFixture f;
+        const auto stored = f.blobs.store(makePng(40, 30));   // no row
+        QSet<QString> held;
+        BlobSweeper sweeper(f.items, f.blobs, f.thumbsDir());
+        sweeper.setProtectedHashes([&held] { return held; });
+        sweeper.start();
+        QThread::msleep(300);   // the walk is over; see aPasteDuringTheSweepKeepsItsPicture
+
+        held.insert(stored.hash);   // an offer appears, holding it
+        sweeper.waitForIdle();
+        QVERIFY2(f.blobs.exists(stored.hash, stored.mime),
+                 "protection given while the sweep ran was not honoured");
+
+        held.clear();               // the offer goes; the next sweep may take it
+        sweeper.start();
+        sweeper.waitForIdle();
+        QVERIFY(!f.blobs.exists(stored.hash, stored.mime));
+    }
+
+    void theWindowSweepsItsOwnThumbnailsNotTheProfiles()
+    {
+        GuiFixture f;
+        // A rendering of something no row references, in the fixture's cache.
+        const QString stale = f.thumbsDir() + QStringLiteral("/ab/abcdef_96.png");
+        QDir().mkpath(QFileInfo(stale).absolutePath());
+        QVERIFY(makePngImage().save(stale, "PNG"));
+
+        f.window.emptyTrashForTest();
+        f.window.sweeperForTest()->waitForIdle();
+        QVERIFY2(!QFile::exists(stale),
+                 "the window swept some other directory — the real profile's");
+    }
+
+    // --- the lightbox pages through the napkin --------------------------------
+    void theLightboxPagesThroughTheNapkinsImagesWithTheArrowKeys()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        QStringList names;
+        for (int i = 0; i < 3; ++i) {
+            const auto stored = f.blobs.store(makePng(100 + i, 80, QColor::fromHsv(i * 90, 200, 200)));
+            const QString name = QStringLiteral("shot-%1").arg(i);
+            names << name;
+            f.service.appendTo(id, Item::makeImage(stored.hash, 100 + i, 80, stored.byteSize,
+                                                   name, stored.mime));
+            if (i == 1)   // text between images is skipped, not shown blank
+                f.service.appendTo(id, Item::makeText(QStringLiteral("between")));
+        }
+        f.model()->reload();
+        f.select(id);
+
+        // The board is newest first: shot-2, shot-1, shot-0.
+        const auto order = f.canvas()->itemOrder();
+        ItemId middle = kNoItem;
+        for (ItemId each : order)
+            if (const auto item = f.items.find(each); item && item->sourceName == names[1])
+                middle = each;
+        QVERIFY(middle != kNoItem);
+
+        QStringList seen;
+        int countSeen = 0;
+        QTimer::singleShot(0, [&] {
+            auto* box = f.window.lightboxForTest();
+            if (!box) return;
+            countSeen = box->count();
+            auto title = [box] { return box->windowTitle().section(QStringLiteral(" — "), 0, 0); };
+            seen << title();
+            QTest::keyClick(box, Qt::Key_Right); seen << title();
+            QTest::keyClick(box, Qt::Key_Right); seen << title();   // the end: stays
+            QTest::keyClick(box, Qt::Key_Home);  seen << title();
+            QTest::keyClick(box, Qt::Key_Left);  seen << title();   // the start: stays
+            box->accept();
+        });
+        QMetaObject::invokeMethod(f.canvas(), "imageActivated", Qt::DirectConnection,
+                                  Q_ARG(napkin::ItemId, middle));
+
+        QCOMPARE(countSeen, 3);
+        QCOMPARE(seen, (QStringList{names[1], names[0], names[0], names[2], names[2]}));
+    }
+
+    // request() writes its pixmap only on success, and the delegate started
+    // from the playing animation's frame — so a missing thumbnail drew some
+    // other row's GIF instead of its "?" (independent review).
+    void aMissingThumbnailNeverBorrowsTheAnimationPlayingElsewhere()
+    {
+        GuiFixture f;
+        const auto gone = f.blobs.store(makePng(60, 60, Qt::blue));
+        QVERIFY(QFile::remove(f.blobs.pathFor(gone.hash, gone.mime)));
+        const auto a = f.buffers.create();
+        f.service.appendTo(a, Item::makeImage(gone.hash, 60, 60, gone.byteSize, {}, gone.mime));
+        const auto b = f.buffers.create();
+        f.service.appendTo(b, Item::makeText(QStringLiteral("other")));
+        f.model()->reload();
+        f.view()->viewport()->grab();
+        f.thumbs.waitForIdle();   // A's thumbnail has now failed
+
+        auto* delegate = f.view()->findChild<BufferCardDelegate*>();
+        QPixmap magenta(64, 64);
+        magenta.fill(Qt::magenta);
+        delegate->setAnimationFrame(f.model()->rowForId(b), magenta);
+
+        const QRect rowA = f.view()->visualRect(f.model()->index(f.model()->rowForId(a), 0));
+        const QImage shot = f.view()->viewport()->grab(rowA).toImage();
+        int borrowed = 0;
+        for (int y = 0; y < shot.height(); ++y)
+            for (int x = 0; x < shot.width(); ++x)
+                if (shot.pixelColor(x, y) == QColor(Qt::magenta)) ++borrowed;
+        QCOMPARE(borrowed, 0);
+    }
+
+    // 0.1.7 stored small images scaled UP, under the same file name.
+    void aPreviewUpscaledByAnOlderVersionIsRemade()
+    {
+        GuiFixture f;
+        const auto stored = f.blobs.store(makePng(200, 140));
+        const QString old = f.thumbsDir() + QStringLiteral("/%1/%2_920.png")
+                                                .arg(stored.hash.left(2), stored.hash);
+        QDir().mkpath(QFileInfo(old).absolutePath());
+        QImage blown(920, 644, QImage::Format_RGB32);
+        blown.fill(Qt::red);
+        QVERIFY(blown.save(old, "PNG"));
+
+        QCOMPARE(f.thumbs.forBlob(stored.hash, stored.mime, 920).size(), QSize(200, 140));
+        QCOMPARE(QImage(old).size(), QSize(200, 140));   // and the file was replaced
+    }
+
+    // The half of the list test that it used to only claim: a delivered
+    // thumbnail makes the list paint again.
+    void aDeliveredThumbnailRepaintsTheList()
+    {
+        GuiFixture f;
+        const auto stored = f.blobs.store(makePng(640, 480));
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeImage(stored.hash, 640, 480, stored.byteSize,
+                                               {}, stored.mime));
+        f.model()->reload();
+        QApplication::processEvents();
+        f.view()->viewport()->repaint();   // asks for the thumbnail
+        QVERIFY(!f.thumbs.isIdle());
+        QApplication::processEvents();     // flush anything already pending
+
+        struct PaintCounter : QObject {
+            int paints = 0;
+            bool eventFilter(QObject*, QEvent* e) override
+            {
+                if (e->type() == QEvent::Paint) ++paints;
+                return false;
+            }
+        } counter;
+        f.view()->viewport()->installEventFilter(&counter);
+        f.thumbs.waitForIdle();            // delivers, and emits ready()
+        QTRY_VERIFY_WITH_TIMEOUT(counter.paints > 0, 2000);
+        f.view()->viewport()->removeEventFilter(&counter);
     }
 };
 

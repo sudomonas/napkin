@@ -26,9 +26,29 @@ public:
 
     void setViewport(int width);
     void setFont(const QFont& body);
+    // The whole board, now.
     void rebuild(const std::vector<Item>& items);
 
+    // The same layout, a piece at a time. Cards are dealt newest first into
+    // the shortest column, so a card's place depends only on the cards before
+    // it — the top of the board is final as soon as the top is measured, and
+    // the rest can wait. Opening a 1000-item napkin used to measure every card
+    // before the first one could be drawn, twice: once at the width the window
+    // was built at and again at the width it was shown at.
+    //
+    // reset() settles the columns and places nothing. placeThrough() places
+    // until no later card can start above `y`; placeFor() places for about
+    // `budgetMs`. Both answer whether anything new was placed. The `items`
+    // passed must be the same list each time, until the next reset().
+    void reset(const std::vector<Item>& items);
+    bool placeThrough(const std::vector<Item>& items, int y);
+    bool placeFor(const std::vector<Item>& items, int budgetMs);
+    void placeAll(const std::vector<Item>& items);
+    bool complete() const { return placements_.size() >= itemCount_; }
+
     int columnWidth() const { return columnWidth_; }
+    // Exact once complete(); until then an estimate from the cards measured so
+    // far, so the scrollbar is roughly the right size from the start.
     int totalHeight() const { return totalHeight_; }
     int columnCount() const { return columns_; }
 
@@ -45,6 +65,7 @@ public:
     // and land on whichever card best lines up with this one.
     int neighbour(int index, Step step) const;
 
+    // Only the cards placed so far; see placeThrough().
     const std::vector<Slot>& placements() const { return placements_; }
     std::vector<int> indicesIn(const QRect& visible, int overscan) const;
     int indexOf(ItemId id) const;
@@ -69,7 +90,13 @@ private:
     struct Measurement { int height; bool clipped; };
     mutable QHash<ItemId, std::pair<MeasureKey, Measurement>> cache_;
 
+    void placeNext(const Item& item);
+    void updateTotalHeight();
+
     std::vector<Slot> placements_;
+    std::vector<int> bottoms_;    // the next free y in each column
+    size_t itemCount_ = 0;
+    qint64 placedHeight_ = 0;     // sum of placed card heights, for the estimate
     int viewportWidth_ = 0;
     int columns_ = 1;
     int columnWidth_ = 0;

@@ -18,7 +18,8 @@ public:
     explicit EmptyStateView(QWidget* parent = nullptr);
 
     // `artwork` may be empty, in which case the space it would take is not
-    // reserved. `actionLabel` may be empty to show no button at all.
+    // reserved. It is a resource path.
+    // `actionLabel` may be empty to show no button at all.
     void setContent(const QString& artwork, const QString& title, const QString& detail,
                     const QString& actionLabel = {});
 
@@ -32,6 +33,8 @@ protected:
     void changeEvent(QEvent* e) override;
 
 private:
+    void drawArtwork();
+    QString artwork_;
     void applyPalette();
 
     QLabel*      art_ = nullptr;

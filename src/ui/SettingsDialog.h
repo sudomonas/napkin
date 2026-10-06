@@ -28,6 +28,8 @@ public:
     enum class Theme { System, Light, Dark };
 
     static Theme theme();
+    // Stores the choice and applies it at once — the main menu's Theme items.
+    static void setTheme(Theme theme);
     static int olderThanDays();
     static int trashRetentionDays();
 
@@ -45,6 +47,8 @@ public:
     // Off by default. Napkin is somewhere to throw things, not a resident
     // service — but it can only catch what is thrown at it if it is running.
     static bool keepInTray();
+    // The global "paste into Napkin" shortcut is wanted and can be had.
+    static bool captureShortcut();
 
     // Applies the stored palette AND font to the running application. One
     // function, because a theme that changed the colours but not the type would
@@ -69,6 +73,7 @@ private:
     QComboBox*     accent_ = nullptr;
     QLabel*        preview_ = nullptr;
     QCheckBox*     tray_ = nullptr;
+    QCheckBox*     shortcut_ = nullptr;
     QSpinBox*      older_ = nullptr;
     QSpinBox*      retention_ = nullptr;
 };
