@@ -21,10 +21,13 @@ private slots:
     // v7: a database from before names keeps every napkin, unnamed.
     void aV6DatabaseGainsNamesWithEveryNapkinUnnamed()
     {
+        // A real v6 database, as 0.1.7 left it. It was faked with DROP COLUMN,
+        // which SQLite has only since 3.35 — CI's 3.31 threw before the
+        // migration under test ever ran.
         TestDb t;
+        t.db.open(QStringLiteral(":memory:"), 6);
+        QCOMPARE(t.db.userVersion(), 6);
         const auto id = t.buffers.create();
-        t.db.exec("ALTER TABLE buffers DROP COLUMN name;");
-        t.db.setUserVersion(6);
         napkin::migrate(t.db);
         QCOMPARE(t.db.userVersion(), napkin::kSchemaVersion);
         const auto found = t.buffers.find(id);

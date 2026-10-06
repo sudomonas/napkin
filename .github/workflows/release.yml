@@ -193,7 +193,7 @@ jobs:
               if ($t -eq 'test_native_style') { Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue } else { $env:QT_QPA_PLATFORM = 'offscreen' }
               & "build\$t.exe" -o "$t.txt,txt" | Out-Null
               $raw = Get-Content "$t.txt" -Raw -ErrorAction SilentlyContinue
-              $detail = "exit $LASTEXITCODE | " + (($raw -split "`r?`n" | Where-Object { $_ -notmatch '^PASS ' }) -join ' | ')
+              $detail = "exit $LASTEXITCODE | " + (($raw -split "`r?`n" | Where-Object { $_ -notmatch '^(PASS |QWARN|QDEBUG|QINFO)' }) -join ' | ')
               Write-Host "::error title=$t::$detail"
             }
             exit 1

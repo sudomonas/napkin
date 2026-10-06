@@ -225,7 +225,9 @@ jobs:
               if ($t -eq 'test_native_style') { Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue } else { $env:QT_QPA_PLATFORM = 'offscreen' }
               & "build\$t.exe" -o "$t.txt,txt" | Out-Null
               $raw = Get-Content "$t.txt" -Raw -ErrorAction SilentlyContinue
-              $detail = "exit $LASTEXITCODE | " + (($raw -split "`r?`n" | Where-Object { $_ -notmatch '^PASS ' }) -join ' | ')
+              # Passes and Qt's warnings left out: an annotation is cut at about
+              # 4 KB, and test_canvas's warnings alone filled it before the FAIL.
+              $detail = "exit $LASTEXITCODE | " + (($raw -split "`r?`n" | Where-Object { $_ -notmatch '^(PASS |QWARN|QDEBUG|QINFO)' }) -join ' | ')
               Write-Host "::error title=$t::$detail"
             }
             exit 1

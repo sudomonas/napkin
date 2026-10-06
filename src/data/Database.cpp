@@ -12,7 +12,7 @@ void Database::fail(const QString& context) const
     throw DbError(context + ": " + msg);
 }
 
-void Database::open(const QString& path)
+void Database::open(const QString& path, int schema)
 {
     close();
     const int rc = sqlite3_open_v2(path.toUtf8().constData(), &db_,
@@ -35,7 +35,8 @@ void Database::open(const QString& path)
     // firing guard_kept_delete — a hole straight through invariant 1.
     exec("PRAGMA recursive_triggers=ON;");
 
-    migrate(*this);
+    if (schema < 0) migrate(*this);
+    else            migrate(*this, schema);
 }
 
 void Database::close()

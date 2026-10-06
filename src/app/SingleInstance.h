@@ -24,6 +24,11 @@ public:
     // Where the lock and socket live; the data directory unless a test says
     // otherwise.
     SingleInstance(const QString& directory, QObject* parent);
+
+    // The local-server name a primary for `directory` listens on: a path in the
+    // data directory (or the runtime directory, when that path is too long for
+    // a Unix socket), or on Windows a named pipe named from its hash.
+    static QString serverNameFor(const QString& directory);
     ~SingleInstance() override;
 
     enum class Outcome {

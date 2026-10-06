@@ -164,7 +164,7 @@ constexpr std::array kMigrations{
 
 }  // namespace
 
-void migrate(Database& db)
+void migrate(Database& db, int upTo)
 {
     const int from = db.userVersion();
     if (from > kSchemaVersion)
@@ -173,7 +173,7 @@ void migrate(Database& db)
                           .arg(from).arg(kSchemaVersion));
 
     for (const auto& m : kMigrations) {
-        if (m.version <= from) continue;
+        if (m.version <= from || m.version > upTo) continue;
         Transaction tx(db);
         db.exec(m.sql);
         db.setUserVersion(m.version);

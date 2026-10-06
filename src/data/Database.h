@@ -17,7 +17,8 @@ public:
 
     // Opens (creating if needed), applies pragmas, and runs migrations.
     // Pass ":memory:" for tests.
-    void open(const QString& path);
+    // Migrates to the current schema; `schema` stops earlier, for tests only.
+    void open(const QString& path, int schema = -1);
     void close();
 
     bool isOpen() const { return db_ != nullptr; }

@@ -139,7 +139,10 @@ int main(int argc, char** argv)
     if (const char* dir = std::getenv("NAPKIN_TEST_OLD_PRIMARY")) {
         QCoreApplication app(argc, argv);
         QLocalServer server;
-        if (!server.listen(QString::fromLocal8Bit(dir) + QStringLiteral("/napkin.sock"))) return 2;
+        // Where an older Napkin listened, which is where this build knocks:
+        // the same function names both. A path written out here was right on
+        // Linux and wrong on Windows, where the name is a hashed pipe.
+        if (!server.listen(SingleInstance::serverNameFor(QString::fromLocal8Bit(dir)))) return 2;
         QObject::connect(&server, &QLocalServer::newConnection, [] {
             std::printf("knocked\n");
             std::fflush(stdout);

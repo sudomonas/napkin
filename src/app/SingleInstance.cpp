@@ -12,8 +12,13 @@ namespace napkin {
 
 SingleInstance::SingleInstance(QObject* parent) : SingleInstance(paths::dataDir(), parent) {}
 
-SingleInstance::SingleInstance(const QString& directory, QObject* parent) : QObject(parent)
+// Where the primary listens for a given data directory. One function, so the
+// name a primary listens on and the name a later launch knocks on cannot
+// disagree — nor can a test's stand-in for an older Napkin, which on Windows
+// listened on a Unix-style path no Windows Napkin ever used.
+QString SingleInstance::serverNameFor(const QString& directory)
 {
+    QString key;
     // Not a bare name: Qt would put that in a shared temp directory when
     // XDG_RUNTIME_DIR is unset, world-connectable, where any local user can
     // create it first and stop Napkin starting at all. Under the 0700 data
@@ -24,28 +29,34 @@ SingleInstance::SingleInstance(const QString& directory, QObject* parent) : QObj
     // the data directory, which contains the user's profile path, so two users
     // (or a test profile) get different pipes; UserAccessOption puts an ACL on
     // it so only this user can connect.
-    key_ = QStringLiteral("io.github.sudomonas.Napkin-")
+    key = QStringLiteral("io.github.sudomonas.Napkin-")
          + QString::fromLatin1(QCryptographicHash::hash(directory.toUtf8(),
                                                         QCryptographicHash::Sha256)
                                    .toHex().left(32));
 #else
-    key_ = directory + QStringLiteral("/napkin.sock");
+    key = directory + QStringLiteral("/napkin.sock");
     // A Unix socket's path has to fit in sockaddr_un — 108 bytes on Linux, 104
     // on macOS — and a data directory under a long home path does not leave
     // room. listen() then failed, so the primary could never be reached and
     // every second launch reported it as not responding. The per-user runtime
     // directory is private to this user too (0700, owned by them), and the
     // name still ties the socket to this data directory.
-    if (key_.toLocal8Bit().size() > 100) {
+    if (key.toLocal8Bit().size() > 100) {
         const QString runtime = qEnvironmentVariable("XDG_RUNTIME_DIR");
         if (!runtime.isEmpty())
-            key_ = runtime + QStringLiteral("/napkin-")
+            key = runtime + QStringLiteral("/napkin-")
                  + QString::fromLatin1(QCryptographicHash::hash(directory.toUtf8(),
                                                                 QCryptographicHash::Sha256)
                                            .toHex().left(16))
                  + QStringLiteral(".sock");
     }
 #endif
+    return key;
+}
+
+SingleInstance::SingleInstance(const QString& directory, QObject* parent) : QObject(parent)
+{
+    key_ = serverNameFor(directory);
     // QLockFile holds a native lock on the file as well as writing its owner
     // into it, and a lock whose owner has died is recognised as stale and taken
     // over. Zero means it is never stale by AGE alone: a Napkin left running

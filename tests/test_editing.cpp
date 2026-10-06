@@ -427,7 +427,14 @@ private slots:
         editor->insertPlainText(QStringLiteral("Q"));
         lock.release();
         QTRY_VERIFY_WITH_TIMEOUT(!f.window.saverForTest()->isBusy(), 5000);
-        QVERIFY2(card->isDirty(), "the older save marked the newer typing as saved");
+        // The fault is a card marked saved while the store lacks its text. Clean
+        // is fine once the newer typing has itself been saved — which on a slow
+        // lock (CI's old SQLite, built without HAVE_USLEEP, waits in whole
+        // seconds) happens before this line runs, and the old assertion that
+        // the card must still be dirty failed there on correct behaviour.
+        QVERIFY2(card->isDirty()
+                     || f.items.listForBuffer(id).front().text == card->text(),
+                 "the older save marked the newer typing as saved");
 
         QVERIFY(f.window.flushForTest(false));
         QVERIFY(f.items.listForBuffer(id).front().text.endsWith(QStringLiteral("SAVEDQ")));
