@@ -73,6 +73,20 @@
   </requires>
 
   <releases>
+    <release version="0.2.0" date="2026-10-06" type="development">
+      <description>
+        <p>Napkin has its own look, the same on Linux and Windows, and a tour of what it can do.</p>
+        <ul>
+          <li>A new design: warm surfaces without borders, a search field, a Home / Trash switch and round buttons in the header, and the Inter typeface on every platform. Light and dark.</li>
+          <li>The menu bar is now one menu behind the menu button (F10), with Theme and Full screen (F11) in it.</li>
+          <li>Settings has two panes: Appearance, Napkins and trash, and In the background.</li>
+          <li>A short welcome tour shows Pin, Keep, calculating a line, search and the trash. It opens once and stays in the menu.</li>
+          <li>The latest napkin opens whenever none is open, and a napkin you paste into moves to the top of the list.</li>
+          <li>Faster with large napkins: previews and thumbnails are made in the background, large notes save in the background, and the image viewer pages with the arrow keys.</li>
+          <li>Two launches at once can no longer both open your napkins; undo offers stack; and an optional shortcut pastes into Napkin from any app where the desktop supports it.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.7" date="2026-09-24" type="development">
       <description>
         <p>Napkin can work out the sums you write on it.</p>
