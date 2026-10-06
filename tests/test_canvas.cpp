@@ -64,6 +64,17 @@ private:
     }
 
 private slots:
+    // Its own settings, by name. Without an organization QSettings fell back
+    // to a shared "Unknown Organization" on Linux, and on Windows the registry
+    // write did not stick at all — the tour's "seen" was lost (CI, 2026-10-06).
+    void initTestCase()
+    {
+        QCoreApplication::setOrganizationName(QStringLiteral("napkin-test-canvas"));
+        QCoreApplication::setApplicationName(QStringLiteral("napkin-test-canvas"));
+        QSettings().clear();
+    }
+    void cleanupTestCase() { QSettings().clear(); }
+
     void bothPanesExist()
     {
         GuiFixture f;
@@ -207,7 +218,16 @@ private slots:
         f.model()->reload();
         f.select(id);
 
-        QVERIFY(QFile::remove(f.blobs.pathFor(stored.hash, stored.mime)));
+        // Retried: on Windows a file another thread has open cannot be
+        // deleted, and the thumbnail worker reads this blob as the napkin opens.
+        // Bounded, so a blob held open for good would still fail here. The
+        // success is remembered: QTRY evaluates its condition once more after
+        // it holds, and a second remove of a removed file is false.
+        {
+            bool removed = false;
+            const QString blob = f.blobs.pathFor(stored.hash, stored.mime);
+            QTRY_VERIFY_WITH_TIMEOUT(removed || (removed = QFile::remove(blob)), 5000);
+        }
         QApplication::clipboard()->setText(QStringLiteral("untouched"));
 
         auto* image = f.canvas()->findChildren<ImageItemCard*>().first();
@@ -234,7 +254,16 @@ private slots:
                                                QStringLiteral("gone.png"), stored.mime));
         f.model()->reload();
         f.select(id);
-        QVERIFY(QFile::remove(f.blobs.pathFor(stored.hash, stored.mime)));
+        // Retried: on Windows a file another thread has open cannot be
+        // deleted, and the thumbnail worker reads this blob as the napkin opens.
+        // Bounded, so a blob held open for good would still fail here. The
+        // success is remembered: QTRY evaluates its condition once more after
+        // it holds, and a second remove of a removed file is false.
+        {
+            bool removed = false;
+            const QString blob = f.blobs.pathFor(stored.hash, stored.mime);
+            QTRY_VERIFY_WITH_TIMEOUT(removed || (removed = QFile::remove(blob)), 5000);
+        }
 
         auto* image = f.canvas()->findChildren<ImageItemCard*>().first();
         QTest::mouseClick(image, Qt::LeftButton);
