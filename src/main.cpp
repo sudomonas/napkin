@@ -108,7 +108,16 @@ int main(int argc, char** argv)
     SettingsDialog::followSystemChanges();
 
     BufferService service(db, buffers, items);
-    service.purgeExpiredTrash();  // the only automatic hard delete (§6)
+    // The only automatic hard delete (§6), and housekeeping: if it cannot run
+    // now it runs at the next start. It sits outside the event loop, so a
+    // throw here was not caught by Application::notify — a database locked by
+    // another program for longer than busy_timeout aborted the launch with a
+    // core dump (audit, 2026-10-09).
+    try {
+        service.purgeExpiredTrash();
+    } catch (const std::exception& e) {
+        qWarning("napkin: expired trash not purged this time: %s", e.what());
+    }
 
     BlobStore blobs(paths::blobsDir());
     Thumbnailer thumbs(paths::thumbsDir(), blobs);

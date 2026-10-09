@@ -214,16 +214,27 @@ int BufferService::emptyTrash()
 // Both read from settings, with the constants as defaults. The domain does not
 // depend on the UI for this: a plain QSettings read keeps napkin_core free of
 // any dialog.
+//
+// A stored value is believed only if it is a number the dialog could have
+// written. The dialog clamps to 1–3650, but the file is plain text: a bare
+// toInt() turned "abc", "30 days", 0 or -5 into a retention of zero or less,
+// and the startup purge then deleted the whole trash for good, unasked
+// (audit, 2026-10-09). Anything else means the default.
+static int lifecycleDays(const QString& key, int fallback)
+{
+    bool ok = false;
+    const int days = QSettings().value(key, fallback).toInt(&ok);
+    return ok && days >= kMinLifecycleDays && days <= kMaxLifecycleDays ? days : fallback;
+}
+
 int BufferService::olderThanDays()
 {
-    return QSettings().value(QStringLiteral("lifecycle/olderThanDays"),
-                             kOlderThresholdDays).toInt();
+    return lifecycleDays(QStringLiteral("lifecycle/olderThanDays"), kOlderThresholdDays);
 }
 
 int BufferService::trashRetentionDays()
 {
-    return QSettings().value(QStringLiteral("lifecycle/trashRetentionDays"),
-                             kTrashRetentionDays).toInt();
+    return lifecycleDays(QStringLiteral("lifecycle/trashRetentionDays"), kTrashRetentionDays);
 }
 
 Timestamp BufferService::olderThanCutoff()

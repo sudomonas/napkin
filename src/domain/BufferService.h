@@ -13,6 +13,10 @@ class ItemRepository;
 // age only moves it into the collapsed OLDER section.
 inline constexpr int kOlderThresholdDays  = 30;
 inline constexpr int kTrashRetentionDays  = 30;
+// The range the settings dialog offers for both, and the range a stored value
+// must fall in to be believed (see BufferService::trashRetentionDays).
+inline constexpr int kMinLifecycleDays = 1;
+inline constexpr int kMaxLifecycleDays = 3650;
 
 // Below this the nudge would be noise. Napkin tolerates accumulation — the
 // offer to clean up should feel like a convenience, not a scolding.

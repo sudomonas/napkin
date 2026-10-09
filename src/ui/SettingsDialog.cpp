@@ -272,15 +272,10 @@ bool SettingsDialog::keepInTray()
            && TrayIcon::availableOnThisDesktop();
 }
 
-int SettingsDialog::olderThanDays()
-{
-    return QSettings().value(kOlder, kOlderThresholdDays).toInt();
-}
-
-int SettingsDialog::trashRetentionDays()
-{
-    return QSettings().value(kRetention, kTrashRetentionDays).toInt();
-}
+// One reader, the domain's, so what the dialog shows is what the startup purge
+// acts on — including the fallback when the stored value is not believable.
+int SettingsDialog::olderThanDays() { return BufferService::olderThanDays(); }
+int SettingsDialog::trashRetentionDays() { return BufferService::trashRetentionDays(); }
 
 void SettingsDialog::applyAppearance()
 {
@@ -502,13 +497,13 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
     lifeForm->setSpacing(10);
 
     older_ = new QSpinBox;
-    older_->setRange(1, 3650);
+    older_->setRange(kMinLifecycleDays, kMaxLifecycleDays);
     older_->setSuffix(tr(" days"));
     older_->setValue(olderThanDays());
     lifeForm->addRow(tr("Move to “Older” after"), older_);
 
     retention_ = new QSpinBox;
-    retention_->setRange(1, 3650);
+    retention_->setRange(kMinLifecycleDays, kMaxLifecycleDays);
     retention_->setSuffix(tr(" days"));
     retention_->setValue(trashRetentionDays());
     lifeForm->addRow(tr("Keep trash for"), retention_);

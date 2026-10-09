@@ -1,9 +1,20 @@
 #include "TestDb.h"
+#include <QSettings>
 #include <QtTest>
 
 class TestBuffers : public QObject {
     Q_OBJECT
 private slots:
+    // Its own settings, so a retention left in a shared store cannot change
+    // what the purge tests below expect.
+    void initTestCase()
+    {
+        QCoreApplication::setOrganizationName(QStringLiteral("napkin-test-buffers"));
+        QCoreApplication::setApplicationName(QStringLiteral("napkin-test-buffers"));
+        QSettings().clear();
+    }
+    void cleanupTestCase() { QSettings().clear(); }
+
     void createAndFind()
     {
         TestDb t;
@@ -109,6 +120,29 @@ private slots:
         QCOMPARE(t.service.purgeExpiredTrash(), 1);
         QVERIFY(t.buffers.find(liveOne).has_value());  // a live buffer never expires
         QVERIFY(!t.buffers.find(trashed).has_value());
+    }
+
+    // A retention the dialog could not have written is not believed. Read as a
+    // bare toInt(), each of these was zero or less and the next start deleted
+    // the entire trash for good (audit, 2026-10-09).
+    void anUnbelievableRetentionFallsBackToTheDefault()
+    {
+        const QString key = QStringLiteral("lifecycle/trashRetentionDays");
+        for (const QVariant& bad : {QVariant(QStringLiteral("abc")), QVariant(QStringLiteral("30 days")),
+                                    QVariant(0), QVariant(-5), QVariant(99999)}) {
+            QSettings().setValue(key, bad);
+            QCOMPARE(napkin::BufferService::trashRetentionDays(), napkin::kTrashRetentionDays);
+
+            TestDb t;
+            const auto trashed = t.buffers.create();
+            t.service.trash(trashed);
+            t.advanceDays(1);
+            QCOMPARE(t.service.purgeExpiredTrash(), 0);
+            QVERIFY(t.buffers.find(trashed).has_value());
+        }
+        QSettings().setValue(key, 7);   // a real choice is still honoured
+        QCOMPARE(napkin::BufferService::trashRetentionDays(), 7);
+        QSettings().remove(key);
     }
 
     void purgeCascadesToItems()

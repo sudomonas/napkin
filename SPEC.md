@@ -2560,6 +2560,8 @@ not fail.**
 | *Test user, 2026-10-06:* expected the list to show the latest addition; asked to name napkins | low | done — "Latest: …" on the row's second line; optional names (§3) |
 | *Test user, 2026-10-06:* wanted everything copied to land in Napkin without switching to it | — | decided: not a clipboard history (§1), and Wayland serves the clipboard only to a focused window (§17); the global capture hotkey is the answer, next |
 | *Test user, 2026-10-06:* could not find the way out of the trash — tried the mouse's Back button, then hunted, before seeing the "Trash" button was a toggle | medium | fixed — the trash list opens with "← Back to napkins" and the retention note; the mouse Back button and Alt+Left also leave (Alt+Left only while in the trash) |
+| *Audit, 2026-10-09:* a trash retention in the settings file that the dialog could not have written (`abc`, `30 days`, `0`, `-5`) was read by a bare `toInt()` as zero or less, and the startup purge **deleted the whole trash for good**, unasked — reproduced against the real binary and a seeded profile | high, data loss | fixed — both lifecycle settings have one reader (`BufferService`), which believes only a number in the dialog's 1–3650 range and otherwise uses the default; the dialog delegates to it. `test_buffers` covers it, and goes red with the old read restored |
+| *Audit, 2026-10-09:* the startup purge ran outside the event loop, so a throw escaped `Application::notify`: a database write-locked by another program for longer than `busy_timeout` aborted the launch with a core dump instead of a message | medium | fixed — the purge is caught and logged and runs again at the next start; reproduced with `sqlite3` holding `BEGIN IMMEDIATE`, then the launch shown to carry on |
 
 **Fixed 2026-10-05**, from the list that stood here: the lightbox pages
 through a napkin's images with ←/→ (Home/End to the ends, no wrap); a long
@@ -2580,6 +2582,18 @@ real lock (§10); undo offers stack and name the napkin (§6).
   the idle trim hands it back (§12). Live data stays under 60 MB throughout.
 - A thumbnail written by a worker for an image whose row is purged *while* the
   write is in flight survives until the next sweep (at the next launch).
+- *Audit, 2026-10-09, latent:* the composer is added to the board's `items_`
+  but not `allItems_` (`ItemCanvas::addPendingTextCard`), so a refilter while it
+  holds unsaved text drops it. Reproduced only by calling `setSearch` directly;
+  every user path found (search, paste, Show all) flushes first. Related: in
+  `MainWindow::flushEditor` a new note's append `break`s out of the loop and
+  `markClean()` then clears edits it skipped. Neither reached through the UI.
+- *Audit, 2026-10-09, hardening:* `svgHasExternalReferences` reads attributes
+  only, so CSS `url()` in a `<style>` element, `@import`, and an
+  `xml-stylesheet` instruction pass it. QtSvg 6 fetched nothing for any of the
+  three (rendered against an external solid-red PNG: zero red pixels, where a
+  bare `<image href>` gave 4096), so this is safe only for as long as QtSvg
+  stays that way.
 
 ---
 
