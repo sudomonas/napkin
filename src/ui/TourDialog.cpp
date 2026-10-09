@@ -307,7 +307,7 @@ TourDialog::TourDialog(QWidget* parent) : QDialog(parent)
     // turned on here would be a promise the app cannot keep.
     if (GlobalShortcut::isSupported())
         steps_.push_back({Picture::Anywhere, tr("Catch things from any app"),
-            tr("Turn on the shortcut in <b>Settings ▸ In the background</b>. Then copy "
+            tr("Turn on the shortcut in <b>Settings ▸ Background</b>. Then copy "
                "something anywhere and press <b>Ctrl+Alt+V</b>: it lands on the napkin you "
                "have open, without leaving what you are doing.")});
 

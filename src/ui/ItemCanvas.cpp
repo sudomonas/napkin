@@ -1,4 +1,5 @@
 #include "ItemCanvas.h"
+#include <QAccessible>
 #include "ItemCard.h"
 #include "../domain/Clock.h"
 #include "../media/BlobStore.h"
@@ -119,6 +120,12 @@ int ItemCanvas::widthForColumns(int columns) const
            + frameWidth() * 2;
 }
 
+void ItemCanvas::setInTrash(bool inTrash)
+{
+    inTrash_ = inTrash;
+    for (auto* card : cards_) card->setRemovable(!inTrash_);
+}
+
 void ItemCanvas::wireCard(ItemCard* card)
 {
     connect(card, &ItemCard::selectRequested, this, &ItemCanvas::applySelection);
@@ -129,6 +136,12 @@ void ItemCanvas::wireCard(ItemCard* card)
         applySelection(id, Qt::NoModifier);
         copySelection();   // which is also what acknowledges it
     });
+    // One click, no question: it goes to the trash, and the window offers Undo.
+    connect(card, &ItemCard::removeRequested, this, [this](ItemId id) {
+        emit removeRequested({id});
+    });
+    card->setRemovable(!inTrash_);
+    card->setKeyboardHere(keyboardOnBoard_);
     connect(card, &ItemCard::escaped, this, [this, card] {
         applySelection(card->itemId(), Qt::NoModifier);
         setFocus(Qt::OtherFocusReason);
@@ -516,9 +529,24 @@ void ItemCanvas::applySelection(ItemId id, Qt::KeyboardModifiers modifiers)
 // Tabbing onto the board showed nothing: no card was current, so there was no
 // ring to draw. Arriving by keyboard now marks the first card current — only
 // current, not selected, so it changes nothing the user did not ask for.
+void ItemCanvas::setKeyboardOnBoard(bool here)
+{
+    if (keyboardOnBoard_ == here) return;
+    keyboardOnBoard_ = here;
+    for (auto* card : cards_) card->setKeyboardHere(here);
+}
+
+// A context menu borrows the keyboard and gives it back; the ring stays.
+void ItemCanvas::focusOutEvent(QFocusEvent* e)
+{
+    QScrollArea::focusOutEvent(e);
+    if (e->reason() != Qt::PopupFocusReason) setKeyboardOnBoard(false);
+}
+
 void ItemCanvas::focusInEvent(QFocusEvent* e)
 {
     QScrollArea::focusInEvent(e);
+    setKeyboardOnBoard(true);
     const bool byKeyboard = e->reason() == Qt::TabFocusReason || e->reason() == Qt::BacktabFocusReason;
     if (byKeyboard && cursor_ < 0 && !cards_.empty()) {
         cursor_ = 0;
@@ -800,7 +828,13 @@ void ItemCanvas::setCursorTo(int index, Qt::KeyboardModifiers modifiers)
         ensureVisible(r.center().x(), r.center().y(),
                       r.width() / 2, r.height() / 2 + kCardGap);
     }
-    if (auto* now = liveCardAt(cursor_)) now->setCurrent(true);
+    if (auto* now = liveCardAt(cursor_)) {
+        now->setCurrent(true);
+        // The board holds the keyboard, not the card, so a screen reader is
+        // told which card the arrows reached.
+        QAccessibleEvent moved(now, QAccessible::Focus);
+        QAccessible::updateAccessibility(&moved);
+    }
 }
 
 // Arrows walk the board as it LOOKS, not as it was written.
@@ -856,6 +890,15 @@ void ItemCanvas::keyPressEvent(QKeyEvent* e)
 
     // These only fire when the canvas itself has focus, not while a caret is in
     // a text block, so they can never eat a keystroke meant for the text.
+    //
+    // With nothing selected they act on the current card — the one with the
+    // ring — after selecting it, so what is about to be copied, cut or
+    // deleted is visible. Ctrl+arrows move the ring without selecting, and
+    // Delete there did nothing at all.
+    const bool acts = e->matches(QKeySequence::Copy) || e->matches(QKeySequence::Cut)
+                      || e->key() == Qt::Key_Delete || e->key() == Qt::Key_Backspace;
+    if (acts && selected_.isEmpty() && cursor_ >= 0 && cursor_ < int(items_.size()))
+        applySelection(items_[size_t(cursor_)].id, Qt::NoModifier);
     if (e->matches(QKeySequence::Copy))      { copySelection(); return; }
     if (e->matches(QKeySequence::Cut))       { cutSelection(); return; }
     if (e->matches(QKeySequence::SelectAll)) { selectAll(); return; }

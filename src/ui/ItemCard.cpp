@@ -1,5 +1,6 @@
 #include "ItemCard.h"
 #include "CardFooter.h"
+#include "Icons.h"
 #include "LinkChip.h"
 #include "../domain/Calc.h"
 #include "../domain/Links.h"
@@ -14,6 +15,8 @@
 #include "../media/ImageFormats.h"
 #include "../media/Thumbnailer.h"
 
+#include <QAbstractButton>
+#include <QCursor>
 #include <QAbstractTextDocumentLayout>
 #include <QFile>
 #include <QImageReader>
@@ -29,11 +32,73 @@
 #include <QScrollBar>
 #include <QTextBlock>
 #include <QTextDocument>
+#include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
 #include <functional>
 
 namespace napkin {
+
+namespace {
+constexpr int kRemoveSize = 24;
+// Pulled a little in from the exact corner, so the disc sits on the card's
+// rounded edge rather than beside it.
+constexpr int kRemoveNudge = 3;
+}  // namespace
+
+// The card's delete button, in its top-right corner. A disc of the card's own
+// colour under a trash icon, so it reads over a picture or a line of text
+// alike; red under the pointer, the one control on a card that removes it.
+// Not a Tab stop: the keyboard has Delete on the card itself.
+class CardRemoveButton : public QAbstractButton {
+public:
+    explicit CardRemoveButton(QWidget* parent) : QAbstractButton(parent)
+    {
+        setObjectName(QStringLiteral("cardRemoveButton"));
+        setFixedSize(kRemoveSize, kRemoveSize);
+        setFocusPolicy(Qt::NoFocus);
+        setCursor(Qt::PointingHandCursor);
+        setAttribute(Qt::WA_Hover, true);
+        setToolTip(ItemCard::tr("Move to trash (Del)"));
+        setAccessibleName(ItemCard::tr("Move to trash"));
+        hide();
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        const QPalette& pal = palette();
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF disc = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        QPainterPath round;
+        round.addEllipse(disc);
+        p.fillPath(round, pal.color(QPalette::Base));
+        const bool hot = underMouse();
+        if (hot || isDown()) p.fillPath(round, tokens::text(pal, tokens::kControlHoverAlpha * 2));
+        p.setPen(QPen(tokens::text(pal, tokens::kHairline), 1.0));
+        p.drawPath(round);
+        const QColor danger = tokens::isLightTheme(pal) ? QColor(0xc0, 0x39, 0x2b)
+                                                        : QColor(0xef, 0x6f, 0x62);
+        icons::drawTrash(&p, rect().adjusted(6, 6, -6, -6),
+                         hot ? danger : tokens::text(pal, tokens::kTextSecondary));
+    }
+    void enterEvent(QEnterEvent* e) override
+    {
+        QAbstractButton::enterEvent(e);
+        update();
+        if (onHoverChanged) onHoverChanged();
+    }
+    void leaveEvent(QEvent* e) override
+    {
+        QAbstractButton::leaveEvent(e);
+        update();
+        if (onHoverChanged) onHoverChanged();
+    }
+
+public:
+    std::function<void()> onHoverChanged;   // its card re-decides whether it shows
+};
 
 void ItemCard::refreshTimestamp()
 {
@@ -96,12 +161,21 @@ protected:
 
 ItemCard::ItemCard(const Item& item, QWidget* parent) : QWidget(parent), item_(item)
 {
-    setFocusPolicy(Qt::StrongFocus);
+    // Not a Tab stop. The board is one: it holds the keyboard and moves a
+    // single "current" card with the arrows. Cards taking focus themselves
+    // meant Tab put a ring on one card while the arrows moved the selection
+    // to another, and the two disagreed about where you were (user,
+    // 2026-10-09).
+    setFocusPolicy(Qt::NoFocus);
     setAttribute(Qt::WA_Hover, true);
     // A card is a surface: a control inside it (a link chip's Open) is drawn
     // cut out of it, or it would be the card's own colour and invisible.
     setProperty(NapkinStyle::kSurfaceProperty, true);
 }
+
+// The button belongs to the board, not the card, so it can stand half outside
+// the card's edge; the card still decides when it shows and where it goes.
+ItemCard::~ItemCard() { delete remove_; }
 
 void ItemCard::setFooterAction(const QString& label)
 {
@@ -125,6 +199,13 @@ void ItemCard::setContent(QWidget* content, const QString& copyLabel, bool image
     footer_->setTimestamp(item_.modifiedAt ? item_.modifiedAt : item_.createdAt);
     connect(footer_, &CardFooter::actionTriggered, this,
             [this] { emit copyRequested(item_.id); });
+
+    // On the board, over the card's top-left corner, half outside it.
+    remove_ = new CardRemoveButton(parentWidget() ? parentWidget() : this);
+    remove_->onHoverChanged = [this] { updateRemoveButton(); };
+    connect(remove_, &QAbstractButton::clicked, this, [this] { emit removeRequested(item_.id); });
+    placeRemoveButton();
+    updateRemoveButton();
     if (image) footer_->setContentsMargins(kImageFooterInset, 0, kImageFooterInset, 0);
     layout->addWidget(footer_);
 }
@@ -133,7 +214,80 @@ void ItemCard::setSelected(bool selected)
 {
     if (selected_ == selected) return;
     selected_ = selected;
+    updateRemoveButton();
     update();
+}
+
+void ItemCard::setRemovable(bool removable)
+{
+    removable_ = removable;
+    updateRemoveButton();
+}
+
+bool ItemCard::removeButtonShown() const { return remove_ && !remove_->isHidden(); }
+
+// Where the pointer or the keyboard is, and nowhere else: a delete button on
+// every card at once would be a board full of them.
+void ItemCard::updateRemoveButton()
+{
+    if (!remove_) return;
+    // The pointer on the button is still the pointer on this card: it stands
+    // partly outside the card, and leaving the card for it must not hide it.
+    const bool pointer = hovered_ || remove_->underMouse()
+        || (remove_->isVisible() && remove_->geometry().contains(
+                remove_->parentWidget()->mapFromGlobal(QCursor::pos())));
+    const bool shown = removable_ && !isComposer() && !hasEditFocus() && isVisible()
+                       && (pointer || selected_ || (current_ && keyboardHere_));
+    remove_->setVisible(shown);
+    if (shown) remove_->raise();
+}
+
+// Centred on the card's top-left corner. The board leaves kPadTop above the
+// first row and kPadX beside the first column so the outer half has room.
+void ItemCard::placeRemoveButton()
+{
+    if (!remove_) return;
+    const QPoint corner = remove_->parentWidget() == this ? QPoint(0, 0) : pos();
+    remove_->move(corner - QPoint(remove_->width() / 2, remove_->height() / 2)
+                  + QPoint(kRemoveNudge, kRemoveNudge));
+}
+
+void ItemCard::resizeEvent(QResizeEvent* e)
+{
+    QWidget::resizeEvent(e);
+    placeRemoveButton();
+}
+
+void ItemCard::moveEvent(QMoveEvent* e)
+{
+    QWidget::moveEvent(e);
+    placeRemoveButton();
+}
+
+void ItemCard::showEvent(QShowEvent* e)
+{
+    QWidget::showEvent(e);
+    placeRemoveButton();
+    updateRemoveButton();
+}
+
+void ItemCard::hideEvent(QHideEvent* e)
+{
+    QWidget::hideEvent(e);
+    if (remove_) remove_->hide();
+}
+
+void ItemCard::setKeyboardHere(bool here)
+{
+    if (keyboardHere_ == here) return;
+    keyboardHere_ = here;
+    updateRemoveButton();
+    update();
+}
+
+bool ItemCard::showsFocusRing() const
+{
+    return current_ && keyboardHere_ && !selected_ && !hasEditFocus();
 }
 
 void ItemCard::acknowledge(const QString& message)
@@ -169,6 +323,7 @@ void ItemCard::setCurrent(bool current)
 {
     if (current_ == current) return;
     current_ = current;
+    updateRemoveButton();
     update();
 }
 
@@ -248,8 +403,8 @@ void ItemCard::paintEvent(QPaintEvent*)
     // as a rendering artefact rather than as one confident selection. The
     // ring's job is to show where the keyboard is when the selection is not
     // already saying so.
-    // A card that has the keyboard itself (Tab lands on cards) is current too.
-    if ((current_ || hasFocus()) && !selected_ && !editing) {
+    // Only while the keyboard is on the board: one "you are here" at a time.
+    if (showsFocusRing()) {
         QPainterPath ring;
         // From the widget's edge, as the list measures it; box is already 0.5 in.
         const qreal in = kFocusInset - 0.5;
@@ -261,12 +416,18 @@ void ItemCard::paintEvent(QPaintEvent*)
 
 }
 
-void ItemCard::focusInEvent(QFocusEvent* e)  { QWidget::focusInEvent(e);  update(); }
-void ItemCard::focusOutEvent(QFocusEvent* e) { QWidget::focusOutEvent(e); update(); }
+void ItemCard::focusInEvent(QFocusEvent* e)
+{
+    QWidget::focusInEvent(e);
+    updateRemoveButton();
+    update();
+}
+void ItemCard::focusOutEvent(QFocusEvent* e) { QWidget::focusOutEvent(e); updateRemoveButton(); update(); }
 
 void ItemCard::enterEvent(QEnterEvent* e)
 {
     hovered_ = true;
+    updateRemoveButton();
     update();
     QWidget::enterEvent(e);
 }
@@ -274,6 +435,7 @@ void ItemCard::enterEvent(QEnterEvent* e)
 void ItemCard::leaveEvent(QEvent* e)
 {
     hovered_ = false;
+    updateRemoveButton();
     update();
     QWidget::leaveEvent(e);
 }
@@ -522,6 +684,7 @@ void TextItemCard::beginEditing(bool moveToEnd)
     edit_->setFocus(Qt::MouseFocusReason);
     if (moveToEnd) edit_->moveCursor(QTextCursor::End);
     emit editingStarted(itemId());
+    updateRemoveButton();   // not over the first line while it is typed into
     update();
 }
 
@@ -531,11 +694,19 @@ void TextItemCard::beginEditing(bool moveToEnd)
 void TextItemCard::endEditing()
 {
     if (!hasEditFocus()) return;
+    // A selection made while editing is the editor's, not the card's. Left in
+    // place it stayed highlighted on a card that was no longer being edited,
+    // looking like a selection that Delete or Ctrl+C would act on (user,
+    // 2026-10-09).
+    QTextCursor caret = edit_->textCursor();
+    caret.clearSelection();
+    edit_->setTextCursor(caret);
     edit_->setReadOnly(true);
     edit_->setTextInteractionFlags(Qt::NoTextInteraction);
     edit_->setFocusPolicy(Qt::NoFocus);
     edit_->clearFocus();
     refreshChip(/*editing=*/false);   // what you typed may now be a link, or not
+    updateRemoveButton();
     update();
     emit heightChanged();
     emit editingFinished(itemId(), text().trimmed().isEmpty());
@@ -737,6 +908,22 @@ void TextItemCard::selectAllText()
 
 bool TextItemCard::eventFilter(QObject* watched, QEvent* event)
 {
+    // The keyboard left the text — Tab, a click in the list or the search box,
+    // anything — so editing is over. Only clicks on the board's empty space
+    // and on other cards used to end it; clicking the sidebar left the card
+    // in edit mode with its selection showing. Not for the editor's own
+    // context menu, nor for switching to another window and back. Deferred,
+    // because ending an edit saves and can rebuild the board, which must not
+    // happen inside the focus change.
+    if (watched == edit_ && event->type() == QEvent::FocusOut && hasEditFocus()) {
+        const auto reason = static_cast<QFocusEvent*>(event)->reason();
+        if (reason != Qt::PopupFocusReason && reason != Qt::ActiveWindowFocusReason) {
+            QTimer::singleShot(0, this, [this] {
+                if (hasEditFocus() && !edit_->hasFocus()) endEditing();
+            });
+        }
+    }
+
     if (event->type() == QEvent::MouseButtonDblClick) {
         // Already editing: a double-click means what it means in any editor —
         // select the word. Intercepting it here placed a caret instead, so
@@ -791,8 +978,8 @@ bool TextItemCard::eventFilter(QObject* watched, QEvent* event)
         auto* key = static_cast<QKeyEvent*>(event);
         const bool enter = key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter;
 
-        // Ctrl+Tab calculates. Plain Tab is taken: it walks between cards, and
-        // that is how the board is reached without a mouse.
+        // Ctrl+Tab calculates. Plain Tab is taken: it leaves the text (and so
+        // ends editing) for the next control, as Tab does everywhere else.
         if (key->key() == Qt::Key_Tab && (key->modifiers() & Qt::ControlModifier)
             && hasEditFocus()) {
             calculate();

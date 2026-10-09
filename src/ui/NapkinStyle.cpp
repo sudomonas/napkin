@@ -37,6 +37,25 @@ QPainterPath rounded(const QRectF& r, qreal radius)
     return path;
 }
 
+// The default button of a dialog whose other button is the one to notice —
+// Cancel beside a red "Delete permanently". Enter still presses it; it is just
+// not painted in the accent as well.
+bool isQuietDefault(const QWidget* w)
+{
+    return w && w->property(NapkinStyle::kQuietDefaultProperty).toBool();
+}
+
+// A button that destroys something ("Delete permanently"): red, so it does
+// not look like the safe choice beside it. Dark enough for the theme's light
+// text at 4.5:1 on both themes; never the default button — Cancel is.
+QColor dangerFill(const QStyleOption* o)
+{
+    QColor fill(0xc0, 0x39, 0x2b);
+    if (o->state & QStyle::State_Sunken) fill = fill.darker(115);
+    else if (o->state & QStyle::State_MouseOver) fill = fill.lighter(110);
+    return fill;
+}
+
 qreal radiusFor(const QString& shape, const QRectF& r)
 {
     if (shape == QLatin1String("circle") || shape == QLatin1String("pill")
@@ -214,7 +233,10 @@ QSize NapkinStyle::sizeFromContents(ContentsType type, const QStyleOption* o,
     case CT_PushButton:
         // Room either side of the words, measured from the words themselves:
         // Fusion's own margin left "Empty trash…" 7px from its rounded ends.
-        if (shapeOf(w).isEmpty()) {
+        // A danger button is an ordinary button in another colour, so it is
+        // sized as one; it fell through to Fusion's tight size and stood
+        // shorter than the Cancel beside it.
+        if (shapeOf(w).isEmpty() || shapeOf(w) == QLatin1String("danger")) {
             s.setWidth(std::max(s.width(), size.width() + 2 * kControlPadX));
             s.setHeight(std::max(s.height(), kFieldHeight));
         } else if (shapeOf(w) == QLatin1String("pill")) {
@@ -477,6 +499,12 @@ void NapkinStyle::drawPrimitive(PrimitiveElement pe, const QStyleOption* o, QPai
             if (isOn(o, State_Selected)) p->fillPath(rounded(r, kControlRadius), pal.color(QPalette::Window));
             else if (isOn(o, State_MouseOver)) p->fillPath(rounded(r, kControlRadius), hoverTint(pal));
             p->restore();
+            // The list is a Tab stop, but a shaped widget gets no ring from
+            // PE_FrameFocusRect, so with nothing drawn here Tab landed on the
+            // pages invisibly and they looked unreachable (user, 2026-10-09).
+            const bool keyboard = isOn(o, State_KeyboardFocusChange)
+                || (w && w->window()->testAttribute(Qt::WA_KeyboardFocusChange));
+            if (isOn(o, State_HasFocus) && keyboard) drawFocusRing(p, r, kControlRadius, pal);
             return;
         }
         if (isOn(o, State_Selected))
@@ -508,7 +536,7 @@ void NapkinStyle::drawControl(ControlElement ce, const QStyleOption* o, QPainter
         // as the primary action.
         const auto* pb = qobject_cast<const QPushButton*>(w);
         const bool isDefault = (b->features & QStyleOptionButton::DefaultButton)
-                               && (!pb || pb->isDefault());
+                               && (!pb || pb->isDefault()) && !isQuietDefault(w);
         const bool enabled = isOn(o, State_Enabled);
         p->save();
         p->setRenderHint(QPainter::Antialiasing, true);
@@ -522,6 +550,8 @@ void NapkinStyle::drawControl(ControlElement ce, const QStyleOption* o, QPainter
                 p->drawPath(pill);
             }
             else if (isOn(o, State_MouseOver) && enabled) p->fillPath(rounded(r.adjusted(3, 3, -3, -3), radius - 3), hoverTint(pal));
+        } else if (shape == QLatin1String("danger") && enabled) {
+            p->fillPath(rounded(r, radius), dangerFill(o));
         } else if (isDefault && !flat && enabled) {
             QColor fill = pal.color(QPalette::Highlight);
             if (isOn(o, State_Sunken)) fill = fill.darker(115);
@@ -545,8 +575,10 @@ void NapkinStyle::drawControl(ControlElement ce, const QStyleOption* o, QPainter
         copy.state &= ~State_HasFocus;   // no dotted rectangle around the words
         const QString shape = shapeOf(w);
         const auto* pb = qobject_cast<const QPushButton*>(w);
-        if ((b->features & QStyleOptionButton::DefaultButton) && (!pb || pb->isDefault())
-            && !(b->features & QStyleOptionButton::Flat) && isOn(o, State_Enabled)) {
+        if (shape == QLatin1String("danger") && isOn(o, State_Enabled)) {
+            copy.palette.setColor(QPalette::ButtonText, textOn(dangerFill(o)));
+        } else if ((b->features & QStyleOptionButton::DefaultButton) && (!pb || pb->isDefault())
+            && !isQuietDefault(w) && !(b->features & QStyleOptionButton::Flat) && isOn(o, State_Enabled)) {
             copy.palette.setColor(QPalette::ButtonText, pal.color(QPalette::HighlightedText));
         } else if (shape == QLatin1String("segment") && !isOn(o, State_On)) {
             copy.palette.setColor(QPalette::ButtonText, text(pal, kTextSecondary));

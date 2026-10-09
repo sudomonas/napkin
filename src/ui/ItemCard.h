@@ -1,6 +1,7 @@
 #pragma once
 #include "../domain/Item.h"
 #include <QStringList>
+#include <QPointer>
 #include <QWidget>
 
 class QLabel;
@@ -11,6 +12,7 @@ namespace napkin {
 
 class BlobStore;
 class CardFooter;
+class CardRemoveButton;
 class LinkChip;
 class Thumbnailer;
 
@@ -31,6 +33,7 @@ public:
     // Relative times go stale; the window's slow tick calls this.
     void refreshTimestamp();
     explicit ItemCard(const Item& item, QWidget* parent = nullptr);
+    ~ItemCard() override;
 
     ItemId itemId() const { return item_.id; }
     const Item& item() const { return item_; }
@@ -44,6 +47,11 @@ public:
     // whether or not it is part of the selection.
     bool isCurrent() const { return current_; }
     void setCurrent(bool current);
+    // Whether the keyboard is on the board at all. The current card's ring and
+    // delete button show only then: a ring on the board while you type in the
+    // search box would be a second "you are here".
+    void setKeyboardHere(bool here);
+    bool showsFocusRing() const;
 
     virtual QString asPlainText() const { return {}; }
 
@@ -57,6 +65,10 @@ public:
     void acknowledge(const QString& message);
     void noteSaved(Timestamp when);
     void setFooterAction(const QString& label);
+    // Whether the corner delete button is offered. Off in the trash, where
+    // deleting is permanent and is not done with one unconfirmed click.
+    void setRemovable(bool removable);
+    bool removeButtonShown() const;
 
     virtual bool hasEditFocus() const { return false; }
 
@@ -65,6 +77,8 @@ signals:
     void activated(ItemId id);
     void escaped();
     void copyRequested(ItemId id);
+    // The footer's delete button: this card, to the trash.
+    void removeRequested(ItemId id);
 
 protected:
     // Re-reads every colour this card derived from the palette. A colour cached
@@ -85,6 +99,12 @@ protected:
     void focusInEvent(QFocusEvent* e) override;
     void focusOutEvent(QFocusEvent* e) override;
     void leaveEvent(QEvent* e) override;
+    void resizeEvent(QResizeEvent* e) override;
+    void moveEvent(QMoveEvent* e) override;
+    void showEvent(QShowEvent* e) override;
+    void hideEvent(QHideEvent* e) override;
+    // Shows the corner delete button where the pointer or keyboard is.
+    void updateRemoveButton();
 
     Item item_;
     mutable bool clipped_ = false;
@@ -95,6 +115,11 @@ private:
     bool selected_ = false;
     bool current_ = false;
     bool hovered_ = false;
+    bool keyboardHere_ = false;
+    bool removable_ = true;
+    // Owned by the board, so it can be gone before this card is.
+    QPointer<CardRemoveButton> remove_;
+    void placeRemoveButton();
 };
 
 class TextItemCard : public ItemCard {

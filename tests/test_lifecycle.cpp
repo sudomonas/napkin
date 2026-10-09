@@ -8,6 +8,7 @@
 #include <QLineEdit>
 #include <QTimer>
 #include <QMessageBox>
+#include "../src/ui/MessageDialog.h"
 #include "../src/domain/Clock.h"
 #include <QtTest>
 
@@ -354,11 +355,9 @@ private slots:
         QObject::connect(&confirm, &QTimer::timeout, [&errors] {
             // Only the confirmation is answered. An error dialog is closed and
             // recorded, so a failure fails the test instead of hanging it.
-            if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
-                bool confirmed = false;
-                for (auto* b : box->buttons())
-                    if (box->buttonRole(b) == QMessageBox::DestructiveRole) { b->click(); confirmed = true; }
-                if (!confirmed) { errors << box->text(); box->close(); }
+            if (auto* box = qobject_cast<MessageDialog*>(QApplication::activeModalWidget())) {
+                if (box->cancelButton()) box->actionButton()->click();   // a confirmation
+                else { errors << box->heading(); box->close(); }        // a problem report
             }
         });
         confirm.start(20);

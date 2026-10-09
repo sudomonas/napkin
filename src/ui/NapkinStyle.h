@@ -50,6 +50,8 @@ public:
     // Set on a container that paints itself as a surface (the sidebar), so the
     // controls in it are drawn cut out of it rather than as more surface.
     static constexpr const char* kSurfaceProperty = "napkinSurface";
+    // A default button painted as an ordinary one; see isQuietDefault().
+    static constexpr const char* kQuietDefaultProperty = "napkinQuietDefault";
 };
 
 }  // namespace napkin

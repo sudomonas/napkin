@@ -36,6 +36,8 @@
 #include <QStyle>
 #include <algorithm>
 #include <QVBoxLayout>
+#include <QPainter>
+#include <QPainterPath>
 
 namespace napkin {
 namespace {
@@ -176,7 +178,7 @@ constexpr int kScaleCount = int(sizeof(kScales) / sizeof(kScales[0]));
 // rows on the start page were white text on a light window; choosing Dark under
 // a light desktop had the mirror-image fault. Every role a widget can draw with
 // is named here.
-QPalette buildPalette(bool dark, const QPalette& system)
+QPalette buildPalette(bool dark, const QPalette& system, const QColor& chosen)
 {
     QPalette p;
     auto both = [&](QPalette::ColorRole role, QColor c) { p.setColor(role, c); };
@@ -210,7 +212,6 @@ QPalette buildPalette(bool dark, const QPalette& system)
     // the platform's, and a saturated accent reads on either background. Its
     // partner is chosen below rather than inherited, because a light-theme
     // HighlightedText carried into a dark theme is how selected text disappears.
-    const QColor chosen = SettingsDialog::accent();
     const QColor accent = chosen.isValid() ? chosen : system.color(QPalette::Highlight);
     both(QPalette::Highlight, accent);
     both(QPalette::HighlightedText, tokens::textOn(accent));
@@ -224,6 +225,16 @@ QPalette buildPalette(bool dark, const QPalette& system)
     p.setColor(QPalette::Disabled, QPalette::Highlight, QColor::fromRgb(c.disabledHighlight));
 
     return p;
+}
+
+// The whole palette for a theme and accent, whether stored or only being
+// tried in the Settings dialog. High contrast steps aside for the platform's.
+QPalette paletteFor(SettingsDialog::Theme theme, const QColor& accent)
+{
+    if (highContrast()) return systemPalette();
+    const bool dark = theme == SettingsDialog::Theme::Dark
+                      || (theme == SettingsDialog::Theme::System && systemIsDark());
+    return buildPalette(dark, systemPalette(), accent);
 }
 
 }  // namespace
@@ -291,12 +302,7 @@ void SettingsDialog::applyAppearance()
     // "Follow the system" follows its light or dark, in Napkin's own colours.
     // It used to mean the platform's palette, so the same Napkin was Breeze on
     // KDE, Adwaita-ish on GNOME and grey Fusion on Windows.
-    if (highContrast()) {
-        QApplication::setPalette(systemPalette());
-    } else {
-        const bool dark = theme() == Theme::Dark || (theme() == Theme::System && systemIsDark());
-        QApplication::setPalette(buildPalette(dark, systemPalette()));
-    }
+    QApplication::setPalette(paletteFor(theme(), accent()));
 
     // Scaled from the base size, never from the current one: scaling the
     // already-scaled font would compound every time this ran.
@@ -359,6 +365,97 @@ void SettingsDialog::followSystemChanges()
     qApp->installEventFilter(watcher);
 }
 
+// A napkin in miniature: a card with a title, a line of text and its footer,
+// and an accent button, in the colours being tried and the chosen face and
+// size. The label it replaces showed "The quick brown fox" on a plain field,
+// which said nothing about what the window would look like.
+class ThemePreview : public QWidget {
+public:
+    ThemePreview()
+    {
+        setObjectName(QStringLiteral("themePreview"));
+        setAccessibleName(QCoreApplication::translate("SettingsDialog", "Preview"));
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
+
+    void setSample(const QFont& font)
+    {
+        sample_ = font;
+        updateGeometry();
+        update();
+    }
+
+    QSize sizeHint() const override
+    {
+        const QFontMetrics body(sample_), small(footerFont());
+        return {300, kOuter * 2 + kPad * 2 + body.lineSpacing() * 2 + kGap
+                     + std::max(small.lineSpacing(), pillHeight())};
+    }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        const QPalette pal = palette();
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRectF outer = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        QPainterPath desk;
+        desk.addRoundedRect(outer, tokens::kCardRadius, tokens::kCardRadius);
+        p.fillPath(desk, pal.color(QPalette::Window));
+        p.setPen(QPen(tokens::text(pal, tokens::kHairline), 1.0));
+        p.drawPath(desk);
+
+        const QRectF card = outer.adjusted(kOuter, kOuter, -kOuter, -kOuter);
+        QPainterPath cardPath;
+        cardPath.addRoundedRect(card, tokens::kCardRadius, tokens::kCardRadius);
+        p.fillPath(cardPath, pal.color(QPalette::Base));
+
+        const QRectF inner = card.adjusted(kPad, kPad, -kPad, -kPad);
+        const QFontMetrics body(sample_);
+        p.setFont(sample_);
+        p.setPen(pal.color(QPalette::Text));
+        auto translate = [](const char* s) { return QCoreApplication::translate("SettingsDialog", s); };
+        QRectF line(inner.left(), inner.top(), inner.width(), body.lineSpacing());
+        p.drawText(line, Qt::AlignLeft | Qt::AlignVCenter,
+                   body.elidedText(translate("The quick brown fox"), Qt::ElideRight, int(line.width())));
+        line.translate(0, body.lineSpacing());
+        p.setPen(tokens::text(pal, tokens::kTextSecondary));
+        p.drawText(line, Qt::AlignLeft | Qt::AlignVCenter,
+                   body.elidedText(translate("jumps over the lazy dog."), Qt::ElideRight, int(line.width())));
+
+        const QFont small = footerFont();
+        const QFontMetrics sm(small);
+        const qreal footerTop = line.bottom() + kGap;
+        const qreal footerH = std::max(sm.lineSpacing(), pillHeight());
+        p.setFont(small);
+        p.setPen(tokens::text(pal, tokens::kTextTertiary));
+        p.drawText(QRectF(inner.left(), footerTop, inner.width() / 2, footerH),
+                   Qt::AlignLeft | Qt::AlignVCenter, translate("just now"));
+
+        const QString label = translate("Save");
+        const qreal pillW = sm.horizontalAdvance(label) + 24;
+        const QRectF pill(inner.right() - pillW, footerTop + (footerH - pillHeight()) / 2,
+                          pillW, pillHeight());
+        QPainterPath pillPath;
+        pillPath.addRoundedRect(pill, pill.height() / 2, pill.height() / 2);
+        p.fillPath(pillPath, pal.color(QPalette::Highlight));
+        p.setPen(pal.color(QPalette::HighlightedText));
+        p.drawText(pill, Qt::AlignCenter, label);
+    }
+
+private:
+    static constexpr int kOuter = 14;   // the window's colour around the card
+    static constexpr int kPad = 14;     // inside the card
+    static constexpr int kGap = 10;     // text to footer
+
+    QFont footerFont() const { return tokens::scaledBy(sample_, 0.88); }
+    int pillHeight() const { return QFontMetrics(footerFont()).height() + 10; }
+
+    QFont sample_;
+};
+
 SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
 {
     setWindowTitle(tr("Settings"));
@@ -415,7 +512,7 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
     };
     auto* appearancePage = addPage(tr("Appearance"));
     auto* napkinsPage    = addPage(tr("Napkins & trash"));
-    auto* backgroundPage = addPage(tr("In the background"));
+    auto* backgroundPage = addPage(tr("Background"));
     setMinimumWidth(720);
 
     // --- appearance ---------------------------------------------------------
@@ -453,7 +550,7 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
     font_->setEditable(false);
     // Napkin ships Inter so it reads the same everywhere; the first entry is
     // that, rather than a named family that might also be installed.
-    font_->insertItem(0, tr("Inter (Napkin's own)"));
+    font_->insertItem(0, tr("Inter (default)"));
     const QString family = fontFamily();
     if (family.isEmpty()) font_->setCurrentIndex(0);
     else                  font_->setCurrentFont(QFont(family));
@@ -467,27 +564,29 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
     }
     textForm->addRow(tr("Text size"), scale_);
 
-    preview_ = new QLabel;
-    preview_->setFrameShape(QFrame::StyledPanel);
-    preview_->setAlignment(Qt::AlignCenter);
-    preview_->setAutoFillBackground(true);   // it shows the chosen theme's surface
-    preview_->setMinimumWidth(260);           // Breeze keeps form fields at their hint
-    textForm->addRow(tr("Preview"), preview_);
+    preview_ = new ThemePreview;
+    auto* previewBox = new QGroupBox(tr("Preview"));
+    auto* previewColumn = new QVBoxLayout(previewBox);
+    previewColumn->addWidget(preview_);
 
     // Live, so the choice is made by looking rather than by guessing and
     // reopening the dialog.
     connect(font_, &QFontComboBox::currentFontChanged, this, &SettingsDialog::updatePreview);
     connect(scale_, &QComboBox::currentIndexChanged, this, &SettingsDialog::updatePreview);
-    connect(accent_, &QComboBox::currentIndexChanged, this, &SettingsDialog::updatePreview);
-    connect(theme_, &QComboBox::currentIndexChanged, this, &SettingsDialog::updatePreview);
+    // Colours are tried on the whole app as they are chosen, and put back if
+    // the dialog is cancelled. Typeface and size stay in the preview: applied
+    // live they would resize this fixed-size dialog under the pointer.
+    connect(accent_, &QComboBox::currentIndexChanged, this, &SettingsDialog::tryColours);
+    connect(theme_, &QComboBox::currentIndexChanged, this, &SettingsDialog::tryColours);
     updatePreview();
 
     appearancePage->addWidget(look);
     appearancePage->addWidget(textBox);
+    appearancePage->addWidget(previewBox);
     appearancePage->addStretch();
 
     // --- napkins and trash --------------------------------------------------
-    auto* life = new QGroupBox(tr("Lifecycle"));
+    auto* life = new QGroupBox(tr("Timing"));
     // A column holding the form and, under it, the notes: QFormLayout does not
     // report a wrapped label's height upward, so notes placed in the form were
     // clipped top and bottom (usability test, 2026-09-19). A plain column does.
@@ -508,7 +607,7 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
     retention_->setValue(trashRetentionDays());
     lifeForm->addRow(tr("Keep trash for"), retention_);
 
-    tray_ = new QCheckBox(tr("Keep Napkin running in the system tray"));
+    tray_ = new QCheckBox(tr("Keep running in the system tray"));
     tray_->setChecked(QSettings().value(kKeepInTray, false).toBool());
     if (!TrayIcon::availableOnThisDesktop()) {
         tray_->setEnabled(false);
@@ -517,12 +616,12 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
 
     // Off by default: turning it on is what makes the desktop ask the user to
     // confirm a shortcut, and nobody should meet that dialog unasked.
-    shortcut_ = new QCheckBox(tr("Paste into Napkin from any app with a keyboard shortcut"));
+    shortcut_ = new QCheckBox(tr("Paste from any app with a shortcut"));
     shortcut_->setChecked(QSettings().value(kCaptureShortcut, false).toBool());
     if (!GlobalShortcut::isSupported()) {
         shortcut_->setChecked(false);
         shortcut_->setEnabled(false);
-        shortcut_->setToolTip(tr("This desktop does not offer global shortcuts to applications."));
+        shortcut_->setToolTip(tr("This desktop doesn't support global shortcuts."));
     }
 
     // A shortcut only works while Napkin is running, and without the tray,
@@ -533,21 +632,18 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
     });
 
     auto* trayNote = new QLabel(
-        tr("Closing the window then hides Napkin instead of quitting it, so it is "
-           "already running the next time you have something to put somewhere."));
+        tr("Closing the window hides Napkin instead of quitting it."));
     trayNote->setWordWrap(true);
 
     auto* note = new QLabel(
-        tr("Nothing is deleted on your behalf. “Older” only changes where "
-           "a napkin sits in the list; the trash is the only thing that empties, "
-           "and only what you have already deleted."));
+        tr("Old napkins only move to “Older”; they are never deleted. "
+           "Only the trash empties itself."));
     note->setWordWrap(true);
 
     auto* shortcutNote = new QLabel(
-        tr("Copy something anywhere, press the shortcut (Ctrl+Alt+V unless you choose "
-           "another), and it lands on the napkin you have open — without leaving what "
-           "you are doing. Your desktop asks you to confirm the shortcut the first "
-           "time. It works while Napkin is running, so it keeps Napkin in the tray."));
+        tr("Copy anything, then press Ctrl+Alt+V (or the shortcut you chose) to add "
+           "it to the open napkin. Your desktop asks you to confirm it once. Turning "
+           "this on also keeps Napkin in the tray."));
     shortcutNote->setWordWrap(true);
 
     lifeColumn->addWidget(note);
@@ -557,7 +653,7 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
     // --- in the background --------------------------------------------------
     // The tray and the global shortcut are one subject: whether Napkin stays
     // running to catch what you throw at it.
-    auto* stay = new QGroupBox(tr("Staying ready"));
+    auto* stay = new QGroupBox(tr("Tray & shortcut"));
     auto* stayColumn = new QVBoxLayout(stay);
     stayColumn->setSpacing(6);
     stayColumn->addWidget(tray_);
@@ -569,11 +665,8 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
     backgroundPage->addStretch();
 
     // Notes are quieter than the controls they explain.
-    for (QLabel* l : {trayNote, shortcutNote, note}) {
-        QPalette pal = l->palette();
-        pal.setColor(l->foregroundRole(), tokens::text(pal, tokens::kTextSecondary));
-        l->setPalette(pal);
-    }
+    notes_ = {trayNote, shortcutNote, note};
+    recolourNotes();
     nav->setCurrentRow(0);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel);
@@ -587,36 +680,47 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
 // under the pointer would move the control you were using.
 void SettingsDialog::updatePreview()
 {
-    const QFont sample = baseFont(font_->currentIndex() > 0 ? font_->currentFont().family()
-                                                            : QString(),
-                                  scale_->currentData().toInt());
-    preview_->setFont(sample);
-    preview_->setText(tr("The quick brown fox\n0123456789"));
-    // Two explicit lines, never wrapped: it was word-wrapped inside a fixed
-    // 56px box, so at larger sizes the second line was cut off.
-    const QFontMetrics fm(sample);
-    preview_->setMinimumHeight(fm.lineSpacing() * 2 + 24);
+    preview_->setSample(baseFont(font_->currentIndex() > 0 ? font_->currentFont().family()
+                                                           : QString(),
+                                 scale_->currentData().toInt()));
+}
 
-    // The chosen theme, in the preview only. The dialog itself still does not
-    // restyle as you choose (a dialog reflowing under the pointer moves the
-    // control you are using), but a preview that ignored the theme left
-    // "Dark" untestable until after Save.
-    const int theme = theme_->currentIndex();
-    const QPalette themed = highContrast()             ? systemPalette()
-                          : theme == int(Theme::Light) ? buildPalette(false, systemPalette())
-                          : theme == int(Theme::Dark)  ? buildPalette(true, systemPalette())
-                                                       : buildPalette(systemIsDark(), systemPalette());
+QColor SettingsDialog::chosenAccent() const
+{
     const int index = accent_->currentIndex();
-    QPalette p = preview_->palette();
-    p.setColor(preview_->backgroundRole(), themed.color(QPalette::Base));
-    if (index > 0) {
-        QPalette probe = themed;
-        probe.setColor(QPalette::Highlight, QColor::fromRgba(kAccents[index].rgb));
-        p.setColor(preview_->foregroundRole(), tokens::readableAccent(probe, 1.0));
-    } else {
-        p.setColor(preview_->foregroundRole(), tokens::text(themed, tokens::kTextPrimary));
+    return index > 0 ? QColor::fromRgba(kAccents[index].rgb) : QColor();
+}
+
+// The colours being chosen, on everything, now: choosing Dark used to change
+// a small preview and leave the window — and this dialog — as they were until
+// Save (user, 2026-10-09).
+void SettingsDialog::tryColours()
+{
+    QApplication::setPalette(paletteFor(Theme(theme_->currentIndex()), chosenAccent()));
+}
+
+// Notes are quieter than the controls they explain. Their colour is set, not
+// inherited, so it is set again whenever the palette changes under them.
+void SettingsDialog::recolourNotes()
+{
+    for (QLabel* l : notes_) {
+        QPalette pal = l->palette();
+        pal.setColor(l->foregroundRole(), tokens::text(palette(), tokens::kTextSecondary));
+        l->setPalette(pal);
     }
-    preview_->setPalette(p);
+}
+
+void SettingsDialog::changeEvent(QEvent* e)
+{
+    QDialog::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange) recolourNotes();
+}
+
+// Whatever was tried and not saved goes back: cancelling, Escape, closing the
+// window. After Save, this re-applies what was just stored.
+SettingsDialog::~SettingsDialog()
+{
+    applyAppearance();
 }
 
 void SettingsDialog::save()

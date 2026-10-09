@@ -4,6 +4,7 @@
 #include "../src/ui/BufferCardDelegate.h"
 #include "../src/ui/BufferListModel.h"
 #include "GuiFixture.h"
+#include "../src/ui/MessageDialog.h"
 
 #include <QLabel>
 #include <QAbstractButton>
@@ -446,25 +447,110 @@ private slots:
     void theSettingsDialogFitsItsContentAndPreviewsTheTheme()
     {
         // Usability test: the dialog opened squeezed, clipping the preview and
-        // the Lifecycle notes, and the preview ignored the chosen theme.
+        // the Lifecycle notes.
         SettingsDialog d;
         d.show();
         QCoreApplication::processEvents();
         for (auto* box : d.findChildren<QGroupBox*>())
             QVERIFY2(box->height() >= box->minimumSizeHint().height(), qPrintable(box->title()));
-
-        QLabel* preview = nullptr;
-        for (auto* l : d.findChildren<QLabel*>())
-            if (l->text().startsWith(QStringLiteral("The quick"))) preview = l;
+        auto* preview = d.findChild<QWidget*>(QStringLiteral("themePreview"));
         QVERIFY(preview);
-        auto* theme = d.findChildren<QComboBox*>().first();   // Theme is the first row
-        theme->setCurrentIndex(int(SettingsDialog::Theme::Light));
-        const QColor light = preview->palette().color(preview->backgroundRole());
-        theme->setCurrentIndex(int(SettingsDialog::Theme::Dark));
-        const QColor dark = preview->palette().color(preview->backgroundRole());
-        QVERIFY2(dark.lightnessF() < light.lightnessF(), "the preview does not show the theme");
+        QVERIFY(preview->height() >= preview->minimumSizeHint().height());
     }
 
+    void choosingAThemeShowsItAtOnceAndCancelPutsItBack()
+    {
+        // User, 2026-10-09: choosing Dark changed a small preview and nothing
+        // else until Save.
+        QSettings().setValue(QStringLiteral("appearance/theme"), int(SettingsDialog::Theme::Light));
+        SettingsDialog::applyAppearance();
+        auto windowLightness = [] { return QApplication::palette().color(QPalette::Window).lightnessF(); };
+        const qreal light = windowLightness();
+        {
+            SettingsDialog d;
+            d.show();
+            auto* theme = d.findChildren<QComboBox*>().first();   // Theme is the first row
+            theme->setCurrentIndex(int(SettingsDialog::Theme::Dark));
+            QVERIFY2(windowLightness() < light, "the app did not change on selection");
+            QTRY_VERIFY(d.palette().color(QPalette::Window).lightnessF() < light);   // the dialog too
+            d.reject();
+        }
+        QCOMPARE(windowLightness(), light);   // cancelled: back to what is stored
+        QCOMPARE(SettingsDialog::theme(), SettingsDialog::Theme::Light);
+
+        {
+            SettingsDialog d;
+            d.show();
+            d.findChildren<QComboBox*>().first()->setCurrentIndex(int(SettingsDialog::Theme::Dark));
+            for (auto* b : d.findChildren<QPushButton*>())
+                if (b->text() == QStringLiteral("Save")) b->click();
+        }
+        QVERIFY(windowLightness() < light);   // saved: it stays
+        QCOMPARE(SettingsDialog::theme(), SettingsDialog::Theme::Dark);
+        QSettings().setValue(QStringLiteral("appearance/theme"), int(SettingsDialog::Theme::Light));
+        SettingsDialog::applyAppearance();
+    }
+
+    void enterNeverConfirmsADeletion()
+    {
+        // The red button is the one to notice, but Enter must still mean Cancel.
+        MessageDialog danger(MessageDialog::Kind::Danger, QStringLiteral("Delete?"),
+                             QStringLiteral("Delete “x”?"), QStringLiteral("This can't be undone."),
+                             QStringLiteral("Delete permanently"));
+        danger.show();
+        QTest::keyClick(&danger, Qt::Key_Return);
+        QVERIFY(!danger.isVisible());   // Enter did something: result() starts at Rejected
+        QCOMPARE(danger.result(), int(QDialog::Rejected));
+        QVERIFY(danger.cancelButton()->isDefault());
+
+        // Painted: Cancel plain, the action red — not two accent-coloured buttons.
+        auto centre = [](QPushButton* b) {
+            return b->grab().toImage().pixelColor(b->width() / 2, 4);
+        };
+        const QColor red = centre(danger.actionButton());
+        QVERIFY2(red.red() > 150 && red.green() < 90, qPrintable(red.name()));
+        QVERIFY(centre(danger.cancelButton()) != QApplication::palette().color(QPalette::Highlight));
+        QCOMPARE(danger.actionButton()->height(), danger.cancelButton()->height());
+
+        MessageDialog notice(MessageDialog::Kind::Notice, QStringLiteral("Napkin"),
+                             QStringLiteral("Nothing to clean up"), QString(), QStringLiteral("OK"));
+        notice.show();
+        QTest::keyClick(&notice, Qt::Key_Return);
+        QCOMPARE(notice.result(), int(QDialog::Accepted));
+    }
+
+    void tabbingToTheSettingsPagesShowsWhereYouAre()
+    {
+        // The page list was a Tab stop with nothing drawn when it took focus,
+        // so the pages looked unreachable from the keyboard (user, 2026-10-09).
+        SettingsDialog d;
+        d.show();
+        auto* nav = d.findChild<QListWidget*>(QStringLiteral("settingsPages"));
+        QVERIFY(nav);
+        QVERIFY(nav->focusPolicy() & Qt::TabFocus);
+        nav->setFocus(Qt::TabFocusReason);
+        QCoreApplication::processEvents();
+
+        const QColor ring = tokens::readableAccent(nav->palette(), 1.0);
+        auto ringPixels = [&] {
+            const QImage shot = nav->viewport()->grab().toImage();
+            const QRect row = nav->visualItemRect(nav->currentItem());
+            int n = 0;
+            for (int y = row.top(); y <= row.bottom(); ++y)
+                for (int x = row.left(); x <= row.right(); ++x) {
+                    const QColor c = shot.pixelColor(x, y);
+                    if (std::abs(c.red() - ring.red()) + std::abs(c.green() - ring.green())
+                        + std::abs(c.blue() - ring.blue()) < 30) ++n;
+                }
+            return n;
+        };
+        d.setAttribute(Qt::WA_KeyboardFocusChange, false);
+        const int off = ringPixels();
+        QVERIFY2(off < 20, qPrintable(QString::number(off)));   // a mouse click does not ring it
+        d.setAttribute(Qt::WA_KeyboardFocusChange, true);
+        const int on = ringPixels();
+        QVERIFY2(on > 100, qPrintable(QStringLiteral("no focus ring on the current page: %1").arg(on)));
+    }
 
     void theToolbarIconsFollowTheTheme()
     {

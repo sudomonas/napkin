@@ -90,7 +90,11 @@ inline constexpr int kGapTight  = 8;
 // (kWindowMargin, kSplitterGap), so the board adds only what makes 24px to the
 // sidebar and 16px to the window's edge, and starts level with the sidebar.
 inline constexpr int kPadX      = 16;
-inline constexpr int kPadTop    = 0;
+// Room above the first row for the cards' delete buttons, which stand half
+// outside the top-left corner. The window takes the same amount off the gap
+// under the header and adds it above the sidebar, so the cards sit where they
+// always did and only the board's scroll area reaches 12px higher.
+inline constexpr int kPadTop    = 12;
 
 // --- window and controls (the 2026-10-06 mockup) -----------------------------
 inline constexpr int kWindowMargin  = 16;  // the desk's edge around everything

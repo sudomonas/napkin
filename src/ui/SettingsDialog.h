@@ -11,6 +11,8 @@ class QSpinBox;
 
 namespace napkin {
 
+class ThemePreview;
+
 // The few things that are genuinely settings.
 //
 // Still deliberately small. Napkin's premise is that you do not configure it,
@@ -23,6 +25,7 @@ class SettingsDialog : public QDialog {
     Q_OBJECT
 public:
     explicit SettingsDialog(QWidget* parent = nullptr);
+    ~SettingsDialog() override;
 
     // --- persisted settings, read anywhere -----------------------------------
     enum class Theme { System, Light, Dark };
@@ -63,15 +66,22 @@ public:
 signals:
     void settingsChanged();
 
+protected:
+    void changeEvent(QEvent* e) override;
+
 private:
     void save();
     void updatePreview();
+    void tryColours();
+    void recolourNotes();
+    QColor chosenAccent() const;
 
     QComboBox*     theme_ = nullptr;
     QFontComboBox* font_ = nullptr;
     QComboBox*     scale_ = nullptr;
     QComboBox*     accent_ = nullptr;
-    QLabel*        preview_ = nullptr;
+    ThemePreview*  preview_ = nullptr;
+    QList<QLabel*> notes_;
     QCheckBox*     tray_ = nullptr;
     QCheckBox*     shortcut_ = nullptr;
     QSpinBox*      older_ = nullptr;

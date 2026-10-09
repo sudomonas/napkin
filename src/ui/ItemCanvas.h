@@ -128,7 +128,8 @@ public:
     // Showing something in the trash: its cards offer Restore and a Delete that
     // is permanent, and no Cut — nothing can be moved out of the trash but by
     // restoring it (usability test, 2026-10-06: Cut was offered and refused).
-    void setInTrash(bool inTrash) { inTrash_ = inTrash; }
+    void setInTrash(bool inTrash);
+    bool keyboardOnBoard() const { return keyboardOnBoard_; }
     bool inTrash() const { return inTrash_; }
     // Repaints the "5 minutes ago" on every card on the board. Only the list
     // used to tick, so a card said "just now" for as long as it was on screen.
@@ -171,6 +172,7 @@ protected:
     void contextMenuEvent(QContextMenuEvent* e) override;
     void keyPressEvent(QKeyEvent* e) override;
     void focusInEvent(QFocusEvent* e) override;
+    void focusOutEvent(QFocusEvent* e) override;
     void resizeEvent(QResizeEvent* e) override;
 
 protected:
@@ -237,6 +239,8 @@ private:
     QHash<ItemId, ItemCard*> live_;           // the cards that currently exist
     QLabel*      placeholder_ = nullptr;
     bool         inTrash_ = false;
+    bool         keyboardOnBoard_ = false;
+    void         setKeyboardOnBoard(bool here);
 
     std::vector<ItemCard*>     cards_;
     std::vector<TextItemCard*> textCards_;

@@ -55,6 +55,7 @@
 #include <QMimeData>
 #include <QLineEdit>
 #include <QMessageBox>
+#include "MessageDialog.h"
 #include <QStandardPaths>
 #include <QPushButton>
 #include <QSplitter>
@@ -270,7 +271,13 @@ void MainWindow::buildUi()
     // The list keeps its own width; the canvas takes the rest. Below ~820px the
     // splitter lets the user collapse either side rather than cramming both.
     splitter_ = new QSplitter(Qt::Horizontal);
-    splitter_->addWidget(listSide);
+    // Lowered by the board's top room, so the sidebar and the first row of
+    // cards still start on the same line.
+    auto* listHolder = new QWidget;
+    auto* listHolderColumn = new QVBoxLayout(listHolder);
+    listHolderColumn->setContentsMargins(0, tokens::kPadTop, 0, 0);
+    listHolderColumn->addWidget(listSide);
+    splitter_->addWidget(listHolder);
     splitter_->addWidget(canvasSide);
     splitter_->setStretchFactor(0, 0);
     splitter_->setStretchFactor(1, 1);
@@ -295,7 +302,7 @@ void MainWindow::buildUi()
     auto* central = new QWidget;
     auto* rootLayout = new QVBoxLayout(central);
     rootLayout->setContentsMargins(0, 0, 0, 0);
-    rootLayout->setSpacing(tokens::kHeaderGap);
+    rootLayout->setSpacing(tokens::kHeaderGap - tokens::kPadTop);   // see kPadTop
     rootLayout->addWidget(buildHeaderWidget());
     // The desk's margin on three sides. The right one is the board's own inset
     // (kPadX), so the board's scroll bar can sit at the window's edge.
@@ -857,8 +864,8 @@ void MainWindow::exportCurrentBuffer()
     const int row = view_->currentIndex().row();
     const BufferId id = row >= 0 ? model_->idAt(row) : kNoBuffer;
     if (id == kNoBuffer) {
-        QMessageBox::information(this, tr("Export"),
-                                 tr("Select a napkin first, then export it."));
+        MessageDialog::notify(this, tr("Export"), tr("No napkin selected"),
+                              tr("Select a napkin first, then export it."));
         return;
     }
 
@@ -894,10 +901,8 @@ void MainWindow::reportExport(const Exporter::Result& result, const QString& wha
 {
     if (!result.ok) {
         // §14: plain language, and say what happened to the content.
-        QMessageBox::warning(this, tr("Export"),
-                             tr("%1 could not be exported.\n\n%2\n\n"
-                                "Nothing in Napkin has been changed.")
-                                 .arg(what, result.error));
+        MessageDialog::notify(this, tr("Export"), tr("%1 could not be exported").arg(what),
+                              tr("%1\n\nNothing in Napkin was changed.").arg(result.error));
         return;
     }
 
@@ -1075,10 +1080,9 @@ void MainWindow::reviewSweep()
     // Nothing to review: say so, rather than opening an empty list with a
     // highlighted "Move to trash" (usability test, 2026-09-19).
     if (dialog.candidates() == 0) {
-        QMessageBox::information(
-            this, tr("Clean up"),
-            tr("Nothing to clean up. No napkin has gone untouched for %1 days.")
-                .arg(BufferService::olderThanDays()));
+        MessageDialog::notify(this, tr("Clean up"), tr("Nothing to clean up"),
+                              tr("No napkin has gone untouched for %1 days.")
+                                  .arg(BufferService::olderThanDays()));
         return;
     }
     if (dialog.exec() != QDialog::Accepted) return;
@@ -1308,18 +1312,12 @@ void MainWindow::removeTrashedItems(const QList<ItemId>& ids, bool cut)
     const int total = items_.countForBuffer(buffer);
     const int n = int(ids.size());
     const bool all = n >= total;
-    QMessageBox box(this);
-    box.setWindowTitle(tr("Delete permanently?"));
-    box.setText(all ? tr("Delete this napkin and everything on it permanently?")
-                    : n == 1 ? tr("Delete this item permanently?")
-                             : tr("Delete these %1 items permanently?").arg(n));
-    box.setInformativeText(tr("This cannot be undone."));
-    box.setIcon(QMessageBox::Warning);
-    box.addButton(QMessageBox::Cancel);
-    auto* confirm = box.addButton(tr("Delete permanently"), QMessageBox::DestructiveRole);
-    box.setDefaultButton(QMessageBox::Cancel);
-    box.exec();
-    if (box.clickedButton() != confirm) return;
+    if (!MessageDialog::confirm(this, tr("Delete permanently?"),
+                                all ? tr("Delete this napkin and everything on it?")
+                                    : n == 1 ? tr("Delete this card?")
+                                             : tr("Delete these %1 cards?").arg(n),
+                                tr("This can't be undone."), tr("Delete permanently")))
+        return;
 
     const std::vector<ItemId> doomed(ids.begin(), ids.end());
     bool napkinGone = false;
@@ -1404,19 +1402,13 @@ void MainWindow::trashRow(int row)
         // Delete used to mean *restore* here, which is the opposite of what it
         // means in every file manager and mail client. Restore is its own
         // action; Delete destroys, with a confirmation because it is final.
-        QMessageBox box(this);
-        box.setWindowTitle(tr("Delete permanently?"));
         // Named: "this napkin" in a dialog that covers the list leaves you
         // guessing which one you pressed Delete on.
         const QString doomedName = napkinName(id);
-        box.setText(tr("Delete “%1” permanently?").arg(doomedName));
-        box.setInformativeText(tr("This cannot be undone."));
-        box.setIcon(QMessageBox::Warning);
-        box.addButton(QMessageBox::Cancel);
-        auto* confirm = box.addButton(tr("Delete permanently"), QMessageBox::DestructiveRole);
-        box.setDefaultButton(QMessageBox::Cancel);
-        box.exec();
-        if (box.clickedButton() != confirm) return;
+        if (!MessageDialog::confirm(this, tr("Delete permanently?"),
+                                    tr("Delete “%1”?").arg(doomedName),
+                                    tr("This can't be undone."), tr("Delete permanently")))
+            return;
 
         if (!guarded(tr("Could not delete that napkin"), [&] {
                 buffers_.hardDeleteEvenIfKept(id);
@@ -1437,19 +1429,14 @@ void MainWindow::trashRow(int row)
         lastTrashed_ = {id, before->kept, before->modifiedAt};
 
     if (!service_.trash(id)) {
-        QMessageBox box(this);
-        box.setWindowTitle(tr("Delete kept napkin?"));
-        box.setText(tr("This napkin is kept."));
-        box.setInformativeText(
-            tr("Clean up never moves a kept napkin to the trash. Deleting it now "
-               "releases that protection and moves it to the trash, where it "
-               "stays for %1 days.").arg(kTrashRetentionDays));
-        box.setIcon(QMessageBox::Warning);
-        box.addButton(QMessageBox::Cancel);
-        auto* del = box.addButton(tr("Delete"), QMessageBox::DestructiveRole);
-        box.setDefaultButton(QMessageBox::Cancel);
-        box.exec();
-        if (box.clickedButton() != del) return;
+        // The user's retention, not the default: this said 30 days whatever
+        // Settings said (audit, 2026-10-09).
+        if (!MessageDialog::confirm(
+                this, tr("Delete kept napkin?"), tr("Delete a kept napkin?"),
+                tr("It loses its Keep and goes to the trash for %1 days.")
+                    .arg(BufferService::trashRetentionDays()),
+                tr("Move to trash")))
+            return;
         service_.trashConfirmed(id);
     }
 
@@ -1555,8 +1542,7 @@ void MainWindow::updateEmptyState()
 void MainWindow::reportProblem(const QString& title, const QString& detail)
 {
     // SPEC.md §14: plain language, and the user's content is accounted for.
-    QMessageBox box(QMessageBox::Warning, title, detail, QMessageBox::Ok, this);
-    box.exec();
+    MessageDialog::notify(this, tr("Napkin"), title, detail);
 }
 
 bool MainWindow::guarded(const QString& title, const std::function<void()>& work)
@@ -1819,7 +1805,6 @@ void MainWindow::emptyTrash()
     const int count = buffers_.countPurgeable();
     if (count == 0) return;
 
-    QMessageBox box(this);
     // Says what is there: a group of cards deleted from a napkin is not a
     // napkin, and "Delete 1 napkin" for one stray card read as wrong.
     int napkins = 0, cards = 0;
@@ -1831,15 +1816,11 @@ void MainWindow::emptyTrash()
     if (napkins > 0) parts << (napkins == 1 ? tr("1 napkin") : tr("%1 napkins").arg(napkins));
     if (cards > 0)   parts << (cards == 1 ? tr("1 card deleted from another napkin")
                                           : tr("%1 cards deleted from other napkins").arg(cards));
-    box.setWindowTitle(tr("Empty the trash?"));
-    box.setText(tr("Delete everything in the trash permanently?"));
-    box.setInformativeText(tr("%1. This cannot be undone.").arg(parts.join(tr(" and "))));
-    box.setIcon(QMessageBox::Warning);
-    box.addButton(QMessageBox::Cancel);
-    auto* confirm = box.addButton(tr("Delete permanently"), QMessageBox::DestructiveRole);
-    box.setDefaultButton(QMessageBox::Cancel);
-    box.exec();
-    if (box.clickedButton() != confirm) return;
+    if (!MessageDialog::confirm(this, tr("Empty the trash?"), tr("Empty the trash?"),
+                                tr("%1 will be deleted. This can't be undone.")
+                                    .arg(parts.join(tr(" and "))),
+                                tr("Delete permanently")))
+        return;
     emptyTrashConfirmed();
 }
 

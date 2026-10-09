@@ -15,6 +15,7 @@
 #include <QAbstractButton>
 #include <QTimer>
 #include <QMessageBox>
+#include "../src/ui/MessageDialog.h"
 #include <QLineEdit>
 #include <QPushButton>
 #include "../src/ui/WelcomeView.h"
@@ -1018,6 +1019,197 @@ private slots:
         }
     }
 
+    // User, 2026-10-09: with the focus ring on a card, Delete did nothing — it
+    // only worked on a card selected with the mouse. And Tab put a ring on one
+    // card while the arrows moved the selection to another.
+    void deleteActsOnTheCardTheKeyboardIsOn()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (int i = 0; i < 4; ++i)
+            f.service.appendTo(id, Item::makeText(QStringLiteral("item %1").arg(i)));
+        f.model()->reload();
+        f.select(id);
+        auto stillThere = [&](const QString& text) {
+            for (const auto& item : f.items.listForBuffer(id)) if (item.text == text) return true;
+            return false;
+        };
+        auto currentText = [&]() -> QString {
+            for (auto* c : f.canvas()->findChildren<TextItemCard*>())
+                if (c->isCurrent()) return f.items.find(c->itemId())->text;
+            return {};
+        };
+        // Offscreen cannot activate the window; Tab's focus is delivered directly.
+        QFocusEvent tabIn(QEvent::FocusIn, Qt::TabFocusReason);
+
+        // 1. Tab onto the board: the current card is marked, and Delete takes it.
+        QApplication::sendEvent(f.canvas(), &tabIn);
+        const QString first = currentText();
+        QVERIFY(!first.isEmpty());
+        QTest::keyClick(f.canvas(), Qt::Key_Delete);
+        QCOMPARE(f.items.countForBuffer(id), 3);
+        QVERIFY(!stillThere(first));
+
+        // 2. Click one card, arrow to the next: the selection goes with the
+        //    arrow, so Delete takes the card the arrow reached.
+        auto cards = f.canvas()->findChildren<TextItemCard*>();
+        QTest::mouseClick(cards[0], Qt::LeftButton);
+        const QString clicked = f.items.find(cards[0]->itemId())->text;
+        QTest::keyClick(f.canvas(), Qt::Key_Down);
+        const QString reached = currentText();
+        QVERIFY(reached != clicked);
+        QCOMPARE(f.canvas()->selection().size(), 1);
+        QTest::keyClick(f.canvas(), Qt::Key_Delete);
+        QVERIFY(stillThere(clicked));
+        QVERIFY(!stillThere(reached));
+
+        // 3. Nothing selected, the ring moved with Ctrl+arrow: Delete takes the
+        //    ringed card.
+        f.canvas()->clearSelection();
+        QTest::keyClick(f.canvas(), Qt::Key_Home, Qt::ControlModifier);
+        QVERIFY(f.canvas()->selection().isEmpty());   // Ctrl moves the ring only
+        const int before = f.items.countForBuffer(id);
+        QTest::keyClick(f.canvas(), Qt::Key_Delete);
+        QCOMPARE(f.items.countForBuffer(id), before - 1);
+    }
+
+    // One "you are here" at a time: the board is a single Tab stop, the arrows
+    // move one ring, and the ring goes when the keyboard leaves the board.
+    void theBoardHasOneTabStopAndOneRing()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (int i = 0; i < 4; ++i)
+            f.service.appendTo(id, Item::makeText(QStringLiteral("item %1").arg(i)));
+        f.model()->reload();
+        f.select(id);
+        auto cards = f.canvas()->findChildren<ItemCard*>();
+        for (auto* c : cards) QCOMPARE(c->focusPolicy(), Qt::NoFocus);   // never their own stop
+
+        auto rings = [&] {
+            int n = 0;
+            for (auto* c : f.canvas()->findChildren<ItemCard*>()) n += c->showsFocusRing();
+            return n;
+        };
+        QFocusEvent tabIn(QEvent::FocusIn, Qt::TabFocusReason);
+        QApplication::sendEvent(f.canvas(), &tabIn);
+        QCOMPARE(rings(), 1);
+        for (auto key : {Qt::Key_Down, Qt::Key_Right, Qt::Key_Up}) {
+            QTest::keyClick(f.canvas(), key, Qt::ControlModifier);   // ring only
+            QCOMPARE(rings(), 1);
+        }
+        QTest::keyClick(f.canvas(), Qt::Key_Down);   // selected: the selection edge says it
+        QCOMPARE(rings(), 0);
+        QCOMPARE(f.canvas()->selection().size(), 1);
+
+        f.canvas()->clearSelection();
+        QCOMPARE(rings(), 1);
+        QFocusEvent tabOut(QEvent::FocusOut, Qt::TabFocusReason);
+        QApplication::sendEvent(f.canvas(), &tabOut);
+        QCOMPARE(rings(), 0);                          // the keyboard is elsewhere
+    }
+
+    // User, 2026-10-09: double-click to edit selects the word; after editing
+    // ended, the word stayed highlighted. And clicking outside the board did
+    // not end editing at all.
+    void leavingEditingLeavesNoTextSelected()
+    {
+        GuiFixture f;
+        const auto id = f.seed("call the dentist on tuesday");
+        f.select(id);
+        auto* card = f.canvas()->findChildren<TextItemCard*>().first();
+        auto* edit = card->findChild<QPlainTextEdit*>();
+        QTest::mouseDClick(edit->viewport(), Qt::LeftButton, {}, QPoint(20, 8));
+        QVERIFY(card->hasEditFocus());
+        QVERIFY(edit->textCursor().hasSelection());   // the word, as an editor does
+
+        card->endEditing();
+        QVERIFY(!card->hasEditFocus());
+        QVERIFY(!edit->textCursor().hasSelection());
+
+        // The keyboard leaving for elsewhere — the list, the search box — ends it.
+        QTest::mouseDClick(edit->viewport(), Qt::LeftButton, {}, QPoint(20, 8));
+        QVERIFY(card->hasEditFocus());
+        QFocusEvent away(QEvent::FocusOut, Qt::MouseFocusReason);
+        QApplication::sendEvent(edit, &away);
+        QTRY_VERIFY(!card->hasEditFocus());
+        QVERIFY(!edit->textCursor().hasSelection());
+
+        // But not its own context menu.
+        QTest::mouseDClick(edit->viewport(), Qt::LeftButton, {}, QPoint(20, 8));
+        QFocusEvent menu(QEvent::FocusOut, Qt::PopupFocusReason);
+        QApplication::sendEvent(edit, &menu);
+        QTest::qWait(20);
+        QVERIFY(card->hasEditFocus());
+        card->endEditing();
+    }
+
+    // User, 2026-10-09: a delete button on the card under the pointer or the
+    // keyboard, on its top-left corner, half outside — and no "are you sure?":
+    // it goes to the trash, with Undo.
+    void aCardsDeleteButtonTrashesItWithoutAsking()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (int i = 0; i < 3; ++i)
+            f.service.appendTo(id, Item::makeText(QStringLiteral("item %1").arg(i)));
+        f.model()->reload();
+        f.select(id);
+
+        auto cards = f.canvas()->findChildren<TextItemCard*>();
+        QCOMPARE(cards.size(), 3);
+        for (auto* c : cards) QVERIFY(!c->removeButtonShown());   // not on every card at once
+
+        QTest::mouseClick(cards[0], Qt::LeftButton);              // selected: the button shows
+        QVERIFY(cards[0]->removeButtonShown());
+        QTest::mouseClick(cards[1], Qt::LeftButton);              // and moves with the selection
+        QVERIFY(cards[1]->removeButtonShown());
+        QVERIFY(!cards[0]->removeButtonShown());
+        QVERIFY(!cards[2]->removeButtonShown());
+
+        QAbstractButton* button = nullptr;
+        for (auto* b : f.canvas()->findChildren<QAbstractButton*>(QStringLiteral("cardRemoveButton")))
+            if (b->isVisible()) button = b;
+        QVERIFY(button);
+        // On the card's top-left corner, half outside it, and still on the board.
+        const QRect card = cards[1]->geometry();
+        QVERIFY(button->geometry().contains(card.topLeft()));
+        QVERIFY(button->geometry().left() < card.left());
+        QVERIFY(button->geometry().top() < card.top());
+        QVERIFY(button->geometry().top() >= 0);
+        QVERIFY(button->geometry().left() >= 0);
+
+        // Not over the text while the note is being typed into.
+        cards[1]->beginEditing();
+        QVERIFY(!cards[1]->removeButtonShown());
+        cards[1]->endEditing();
+        QTest::mouseClick(cards[1], Qt::LeftButton);
+        QVERIFY(cards[1]->removeButtonShown());
+
+        // Any dialog that opens is a failure; close it so the test cannot hang.
+        bool asked = false;
+        QTimer watch;
+        QObject::connect(&watch, &QTimer::timeout, [&asked] {
+            if (auto* w = QApplication::activeModalWidget()) { asked = true; w->close(); }
+        });
+        watch.start(20);
+
+        const ItemId doomed = cards[1]->itemId();
+        QTest::mouseClick(button, Qt::LeftButton);
+        QVERIFY(!asked);
+        QCOMPARE(f.items.countForBuffer(id), 2);
+        QVERIFY(f.buffers.find(f.items.find(doomed)->bufferId)->inTrash());   // trashed, not destroyed
+        QVERIFY(f.toast()->hasOffer());                                       // and Undo is offered
+
+        // In the trash a delete is permanent, so there is no one-click button.
+        f.canvas()->setInTrash(true);
+        auto* left = f.canvas()->findChildren<TextItemCard*>().first();
+        QTest::mouseClick(left, Qt::LeftButton);
+        QVERIFY(!left->removeButtonShown());
+        f.canvas()->setInTrash(false);
+        QVERIFY(left->removeButtonShown());
+    }
+
     void anEditingCardIsNotWashedOverWithTheSelectionTint()
     {
         GuiFixture f;
@@ -1916,9 +2108,9 @@ private slots:
 
         QTimer::singleShot(50, [] {
             for (QWidget* w : QApplication::topLevelWidgets())
-                if (auto* box = qobject_cast<QMessageBox*>(w))
-                    for (auto* b : box->buttons())
-                        if (b->text() == QStringLiteral("Delete permanently")) b->click();
+                if (auto* box = qobject_cast<MessageDialog*>(w))
+                    if (box->actionButton()->text() == QStringLiteral("Delete permanently"))
+                        box->actionButton()->click();
         });
         f.window.emptyTrash();               // from the menu, on the napkin list
         QCOMPARE(f.buffers.countTrash(), 0);

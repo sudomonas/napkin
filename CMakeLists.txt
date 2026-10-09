@@ -129,6 +129,7 @@ qt_add_library(napkin_ui STATIC
   src/ui/UndoToast.cpp
   src/ui/Lightbox.cpp
   src/ui/SweepDialog.cpp
+  src/ui/MessageDialog.cpp
   src/ui/SettingsDialog.cpp
   src/ui/WelcomeView.cpp
   src/ui/EmptyStateView.cpp
