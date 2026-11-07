@@ -443,7 +443,11 @@ private slots:
     void aBackgroundSaveThatFailsAfterARebuildLosesNothing()
     {
         GuiFixture f{GuiFixture::OnDisk{}};
-        f.window.saverForTest()->setBusyTimeoutForTest(100);
+        // Long enough that the save is still in flight when the board rebuilds
+        // (a 100 ms timeout failed before the 50 ms poll could see it on CI),
+        // and a whole second so SQLite built without HAVE_USLEEP, which sleeps
+        // in whole seconds and gives up at once on anything shorter, waits too.
+        f.window.saverForTest()->setBusyTimeoutForTest(1000);
         // The failure says so in a dialog; answer it.
         QTimer closer;
         QObject::connect(&closer, &QTimer::timeout, [] {
@@ -454,14 +458,19 @@ private slots:
         napkin::BufferId id;
         auto* opened = openLargeNote(f, &id);
         auto lock = std::make_unique<WriteLock>(f.db);
+        // Listening before the save starts, so its failure cannot slip past.
+        QSignalSpy failed(f.window.saverForTest(), &BackgroundSaver::failed);
         typeAtEnd(opened, QStringLiteral("KEEP"));
         QTRY_VERIFY_WITH_TIMEOUT(f.window.saverForTest()->isBusy(), 2000);
         f.canvas()->setItems(f.items.listForBuffer(id));
+        QCOMPARE(failed.size(), 0);   // the rebuild really landed mid-save
 
         // Held past busy_timeout, the worker gives up. Waiting on the failure
         // itself, not on "idle": autosave retries at once, into the same lock.
-        QSignalSpy failed(f.window.saverForTest(), &BackgroundSaver::failed);
-        QTRY_VERIFY_WITH_TIMEOUT(failed.size() >= 1, 3000);
+        // A generous limit: closing the failure dialog re-activates the window,
+        // whose focus-change flush is synchronous on the UI thread and waits out
+        // the main connection's 3 s busy_timeout against this same lock.
+        QTRY_VERIFY_WITH_TIMEOUT(failed.size() >= 1, 15000);
         lock->release();
         auto* card = f.canvas()->findChildren<TextItemCard*>().first();
         QVERIFY(card->text().endsWith(QStringLiteral("KEEP")));
