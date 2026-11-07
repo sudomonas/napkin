@@ -72,6 +72,18 @@ private slots:
         QVERIFY_THROWS_EXCEPTION(napkin::DbError, t.db.exec("DELETE FROM buffers WHERE kept = 1"));
         QVERIFY(t.buffers.find(second).has_value());
     }
+
+    void replaceCannotSmuggleAKeptBufferOut()
+    {
+        TestDb t;
+        const auto id = t.buffers.create();
+        t.buffers.setKept(id, true);
+
+        QVERIFY_THROWS_EXCEPTION(napkin::DbError,
+            t.db.exec(QString("INSERT OR REPLACE INTO buffers(id, created_at, modified_at, kept)"
+                              " VALUES(%1, 1, 1, 0)").arg(id).toUtf8().constData()));
+        QVERIFY(t.buffers.find(id)->kept);
+    }
 };
 
 QTEST_APPLESS_MAIN(TestInvariants)

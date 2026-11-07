@@ -768,6 +768,108 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(counter.paints > 0, 2000);
         f.view()->viewport()->removeEventFilter(&counter);
     }
+
+    void anSvgThatNamesALocalFileIsRefused()
+    {
+        QVERIFY(formats::svgHasExternalReferences(
+            "<svg xmlns='http://www.w3.org/2000/svg'><image href='/etc/hostname'/></svg>"));
+        QVERIFY(formats::svgHasExternalReferences(
+            "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink'>"
+            "<image xlink:href='/tmp/secret.png'/></svg>"));
+        QVERIFY(formats::svgHasExternalReferences(
+            "<svg xmlns='http://www.w3.org/2000/svg'><rect fill='url(/tmp/x.png)'/></svg>"));
+    }
+
+    void aSelfContainedSvgIsStillAccepted()
+    {
+        QVERIFY(!formats::svgHasExternalReferences(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'>"
+            "<defs><linearGradient id='g'/></defs><rect fill='url(#g)' width='10' height='10'/>"
+            "</svg>"));
+
+        QTemporaryDir dir;
+        BlobStore store(dir.path());
+        const auto ok = store.store(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'>"
+            "<rect width='10' height='10' fill='red'/></svg>");
+        QVERIFY2(ok.ok, qPrintable(ok.error));
+
+        const auto refused = store.store(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'>"
+            "<image href='/tmp/secret.png' width='10' height='10'/></svg>");
+        QVERIFY(!refused.ok);
+        QVERIFY(refused.error.contains(QStringLiteral("other files")));
+    }
+
+    void aPixelBombIsRefusedEvenThoughItIsTiny()
+    {
+        QTemporaryDir dir;
+        BlobStore store(dir.path());
+        QImage huge(20000, 20000, QImage::Format_Mono);   // declares 400 megapixels
+        huge.fill(0);
+        QByteArray bytes;
+        QBuffer buffer(&bytes);
+        buffer.open(QIODevice::WriteOnly);
+        if (!huge.save(&buffer, "PNG")) QSKIP("could not build the test image");
+
+        QVERIFY(bytes.size() < BlobStore::kMaxBytes);   // passes the byte check
+        const auto stored = store.store(bytes);
+        QVERIFY(!stored.ok);                            // and is still refused
+    }
+
+    void pastingWhatNapkinCannotHoldSaysSoAndMakesNoNapkin()
+    {
+        GuiFixture f;
+        QApplication::clipboard()->clear();
+
+        f.window.pasteFromClipboard();
+
+        QVERIFY2(f.toast()->isVisible(), "an impossible paste must say why");
+        QString said;
+        for (auto* l : f.toast()->findChildren<QLabel*>())
+            if (!l->text().isEmpty()) said = l->text();
+        QVERIFY2(said.contains(QStringLiteral("clipboard")),
+                 qPrintable(QStringLiteral("unhelpful message: ") + said));
+    }
+
+    void aCardShowsItsThumbnailLimitAndCountsEveryImage()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("Investigate this bug")));
+        for (int i = 0; i < 4; ++i) {
+            const auto stored = f.blobs.store(makePng(60 + i, 40 + i, QColor::fromHsv(i * 40, 200, 220)));
+            Q_ASSERT(stored.ok);
+            f.service.appendTo(id, Item::makeImage(stored.hash, stored.size.width(),
+                                                   stored.size.height(), stored.byteSize,
+                                                   QStringLiteral("shot%1.png").arg(i),
+                                                   stored.mime));
+        }
+        f.model()->reload();
+        const int row = f.model()->rowForId(id);
+
+        QCOMPARE(f.model()->index(row, 0).data(BufferListModel::ImageCountRole).toInt(), 4);
+        QCOMPARE(f.model()->index(row, 0).data(BufferListModel::ThumbCountRole).toInt(),
+                 kMaxCardThumbs);
+        QCOMPARE(int(f.model()->thumbsAt(row).size()), kMaxCardThumbs);
+
+        const auto thumbs = f.model()->thumbsAt(row);
+        for (size_t k = 1; k < thumbs.size(); ++k)
+            QVERIFY(thumbs[k - 1].hash != thumbs[k].hash);
+    }
+
+    void aSingleImageStillGetsOneThumbnail()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        const auto stored = f.blobs.store(makePng(60, 40));
+        f.service.appendTo(id, Item::makeImage(stored.hash, 60, 40, stored.byteSize,
+                                               QStringLiteral("shot.png"), stored.mime));
+        f.model()->reload();
+        const int row = f.model()->rowForId(id);
+        QCOMPARE(f.model()->index(row, 0).data(BufferListModel::ThumbCountRole).toInt(), 1);
+        QCOMPARE(f.model()->index(row, 0).data(BufferListModel::ImageCountRole).toInt(), 1);
+    }
 };
 
 QTEST_MAIN(TestImages)

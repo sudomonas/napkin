@@ -35,7 +35,15 @@ void BackgroundSaver::save(BufferId buffer, std::vector<Entry> entries)
         QString error;
         Timestamp when = 0;
         try {
-            if (!connection->isOpen()) connection->open(path);
+            if (!connection->isOpen()) {
+                connection->open(path);   // sets Database's default busy_timeout
+                appliedBusyTimeoutMs_ = 0;
+            }
+            // A test override, applied once per value rather than on every save.
+            if (const int ms = busyTimeoutMs_.load(); ms > 0 && ms != appliedBusyTimeoutMs_) {
+                connection->exec(QString("PRAGMA busy_timeout=%1;").arg(ms).toUtf8().constData());
+                appliedBusyTimeoutMs_ = ms;
+            }
             ItemRepository items(*connection);
             BufferRepository buffers(*connection);
             Transaction tx(*connection);

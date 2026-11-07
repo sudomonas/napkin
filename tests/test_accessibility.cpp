@@ -207,6 +207,35 @@ private slots:
         QVERIFY(!f.view()->accessibleName().isEmpty());
         QVERIFY(!f.canvas()->accessibleName().isEmpty());
     }
+
+    void theOverflowMenuActuallyListsTheActions()
+    {
+        GuiFixture f;
+        auto* button = f.window.findChild<QToolButton*>(QStringLiteral("overflowButton"));
+        QVERIFY(button);
+        QVERIFY(button->menu());
+        QStringList labels;
+        for (auto* a : button->menu()->actions())
+            if (!a->isSeparator()) labels << a->text();
+        // Ctrl+T is the keyboard way to start a note; it must be findable.
+        QVERIFY2(labels.filter(QStringLiteral("New note")).size() > 0,
+                 qPrintable("menu had: " + labels.join(", ")));
+        QVERIFY(labels.size() >= 4);
+    }
+
+    void everyCardAnnouncesItselfToAScreenReader()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("a note worth reading")));
+        f.model()->reload();
+        f.select(id);
+
+        for (auto* card : f.canvas()->findChildren<ItemCard*>()) {
+            QVERIFY2(!card->accessibleName().isEmpty(),
+                     "a card with no accessible name announces nothing");
+        }
+    }
 };
 
 QTEST_MAIN(TestAccessibility)

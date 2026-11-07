@@ -1,6 +1,7 @@
 
 #include <QPushButton>
 #include <QStackedWidget>
+#include <QClipboard>
 #include "../src/ui/EmptyStateView.h"
 #include "GuiFixture.h"
 #include <QLabel>
@@ -701,6 +702,114 @@ private slots:
         back->trigger();
         QCOMPARE(f.model()->mode(), BufferListModel::Mode::Live);
         QVERIFY(!back->isEnabled());
+    }
+
+    void undoingAConfirmedDeleteRestoresTheKeep()
+    {
+        GuiFixture f;
+        const auto id = f.seed("important reference");
+        f.window.toggleKeep(f.model()->rowForId(id));
+        const auto modifiedBefore = f.buffers.find(id)->modifiedAt;
+
+        f.service.trashConfirmed(id);
+        f.model()->reload();
+        QVERIFY(!f.buffers.find(id)->kept);
+
+        f.window.undoLastTrashForTest(id, /*wasKept=*/true, modifiedBefore);
+
+        QVERIFY(f.buffers.find(id)->kept);
+        QVERIFY(!f.buffers.find(id)->inTrash());
+        QCOMPARE(f.buffers.find(id)->modifiedAt, modifiedBefore);
+    }
+
+    void newBufferLeavesTheTrashViewFirst()
+    {
+        GuiFixture f;
+        f.seed("something");
+        f.window.showTrash(true);
+        QCOMPARE(f.model()->mode(), BufferListModel::Mode::Trash);
+
+        f.trigger("newBufferAction");
+
+        QCOMPARE(f.model()->mode(), BufferListModel::Mode::Live);
+    }
+
+    void twoQuickDeletesAreBothUndoableNewestFirst()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (const char* t : {"first", "second", "third"})
+            f.service.appendTo(id, Item::makeText(QString::fromLatin1(t)));
+        f.model()->reload();
+        f.select(id);
+
+        auto removeText = [&](const QString& text) {
+            for (const auto& item : f.items.listForBuffer(id))
+                if (item.text == text) {
+                    f.canvas()->setCursorTo(f.canvas()->indexOf(item.id), Qt::NoModifier);
+                    f.canvas()->deleteSelection();
+                    return;
+                }
+            QFAIL("no such item");
+        };
+        removeText(QStringLiteral("first"));
+        removeText(QStringLiteral("second"));
+        QCOMPARE(f.items.countForBuffer(id), 1);
+        QCOMPARE(f.toast()->offerCount(), 2);
+        QVERIFY2(toastWords(f).contains(QStringLiteral("1 more to undo")),
+                 qPrintable(toastWords(f)));
+
+        QVERIFY(f.toast()->undoNow());
+        QCOMPARE(f.items.countForBuffer(id), 2);
+        QVERIFY(!toastWords(f).contains(QStringLiteral("more to undo")));
+        QVERIFY(f.toast()->undoNow());
+        QCOMPARE(f.items.countForBuffer(id), 3);
+        QVERIFY(!f.toast()->undoNow());
+        QVERIFY(!f.toast()->isVisible());
+    }
+
+    void eachOfferRunsOutOnItsOwnClock()
+    {
+        GuiFixture f;
+        auto* toast = f.toast();
+        toast->setVisibleMsForTest(600);
+        int undone = 0;
+        toast->offer(QStringLiteral("older"), [&] { undone = 1; });
+        QTest::qWait(350);
+        toast->offer(QStringLiteral("newer"), [&] { undone = 2; });
+        QCOMPARE(toast->offerCount(), 2);
+
+        QTRY_COMPARE_WITH_TIMEOUT(toast->offerCount(), 1, 1000);
+        QVERIFY(toast->isVisible());
+        QVERIFY(toast->undoNow());
+        QCOMPARE(undone, 2);
+    }
+
+    void everyLiveOfferKeepsItsBlobsHeld()
+    {
+        GuiFixture f;
+        auto* toast = f.toast();
+        toast->offer(QStringLiteral("a"), [] {}, {QStringLiteral("aaa")});
+        toast->offer(QStringLiteral("b"), [] {}, {QStringLiteral("bbb")});
+        QCOMPARE(toast->protectedHashes(),
+                 (QSet<QString>{QStringLiteral("aaa"), QStringLiteral("bbb")}));
+        toast->undoNow();
+        QCOMPARE(toast->protectedHashes(), QSet<QString>{QStringLiteral("aaa")});
+        toast->dismiss();
+        QVERIFY(toast->protectedHashes().isEmpty());
+    }
+
+    void pastingWhileLookingAtTheTrashMakesANewNapkin()
+    {
+        GuiFixture f;
+        const auto id = f.seed("old");
+        f.service.trash(id);
+        f.model()->reload();
+        f.window.showTrash(true);
+        QApplication::clipboard()->setText(QStringLiteral("fresh thought"));
+        f.trigger("pasteAction");
+        QCOMPARE(f.model()->mode(), BufferListModel::Mode::Live);
+        QCOMPARE(f.buffers.countLive(), 1);
     }
 };
 

@@ -1,7 +1,10 @@
 #include "GuiFixture.h"
 #include "../src/ui/SweepDialog.h"
 #include "../src/domain/Clock.h"
+#include "../src/media/BlobGc.h"
 
+#include <QBuffer>
+#include <QDir>
 #include <QLabel>
 #include <QListWidget>
 #include <QPushButton>
@@ -223,6 +226,76 @@ private slots:
         QVERIFY(!sweep->isEnabled());
     }
 
+    void emptyingTheTrashAlsoRemovesTheThumbnail()
+    {
+        GuiFixture f;
+        QImage img(300, 200, QImage::Format_RGB32); img.fill(Qt::magenta);
+        QByteArray png; QBuffer buf(&png); buf.open(QIODevice::WriteOnly);
+        img.save(&buf, "PNG");
+
+        const auto stored = f.blobs.store(png);
+        QVERIFY(stored.ok);
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeImage(stored.hash, 300, 200, stored.byteSize,
+                                               {}, stored.mime));
+        QVERIFY(!f.thumbs.forBlob(stored.hash, stored.mime).isNull());
+
+        const QString thumbDir = f.thumbsDir();
+        QVERIFY(!QDir(thumbDir).entryList(QDir::Files | QDir::NoDotAndDotDot).isEmpty()
+                || !QDir(thumbDir).entryList(QDir::Dirs | QDir::NoDotAndDotDot).isEmpty());
+
+        f.service.trash(id);
+        f.service.emptyTrash();
+        const auto result = reconcileBlobs(f.items, f.blobs, thumbDir);
+
+        QVERIFY(!f.blobs.exists(stored.hash, stored.mime));
+        QCOMPARE(result.thumbnailsRemoved, 1);
+    }
+
+    void theEmptyTrashCountMatchesWhatWillActuallyBeDestroyed()
+    {
+        GuiFixture f;
+        const auto ordinary = f.buffers.create();
+        const auto stuck = f.buffers.create();
+        f.buffers.setKept(stuck, true);
+        f.db.exec("UPDATE buffers SET deleted_at = 1");
+
+        QCOMPARE(f.buffers.countTrash(), 2);
+        QCOMPARE(f.buffers.countPurgeable(), 1);
+        QCOMPARE(f.service.emptyTrash(), 1);
+        QVERIFY(f.buffers.find(stuck).has_value());
+        QVERIFY(!f.buffers.find(ordinary).has_value());
+    }
+
+    void theSweepDoesNotDestroyABlobUndoStillNeeds()
+    {
+        GuiFixture f;
+        QImage img(40, 30, QImage::Format_RGB32); img.fill(Qt::red);
+        QByteArray png; QBuffer buf(&png); buf.open(QIODevice::WriteOnly);
+        img.save(&buf, "PNG");
+
+        const auto stored = f.blobs.store(png);
+        const auto keep = f.buffers.create();
+        f.service.appendTo(keep, Item::makeText(QStringLiteral("still here")));
+        const auto doomed = f.buffers.create();
+        f.service.appendTo(doomed, Item::makeImage(stored.hash, 40, 30, stored.byteSize,
+                                                   {}, stored.mime));
+        f.model()->reload();
+
+        f.select(doomed);
+        f.canvas()->selectAll();
+        f.canvas()->deleteSelection();
+        QVERIFY(f.toast()->hasOffer());
+
+        reconcileBlobs(f.items, f.blobs, f.thumbsDir(), f.window.undoProtectedBlobsForTest());
+
+        if (f.toast()->hasOffer()) {
+            f.toast()->findChild<QPushButton*>()->click();
+            for (const auto& item : f.items.allImageItems())
+                QVERIFY2(f.blobs.exists(item.blobHash, item.mime),
+                         "undo restored a row whose blob had been swept away");
+        }
+    }
 };
 
 QTEST_MAIN(TestSweep)

@@ -115,6 +115,20 @@ private slots:
                                  3000);
         QCOMPARE(f.items.countForBuffer(id), 1);
     }
+
+    void quitEndsTheApplicationEvenWithTheWindowHidden()
+    {
+        GuiFixture f;
+        f.window.show();
+        QVERIFY(f.window.isVisible());
+        f.window.hide();
+        QVERIFY(!f.window.isVisible());
+
+        QSignalSpy going(&f.window, &MainWindow::quitting);
+        QVERIFY(f.window.quitNapkin());
+        QCOMPARE(going.count(), 1);
+        QVERIFY(!f.window.isVisible());
+    }
 };
 
 QTEST_MAIN(TestTray)

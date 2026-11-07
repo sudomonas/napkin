@@ -186,6 +186,15 @@ private slots:
         shot.sourceName = QStringLiteral("chart.png");
         QCOMPARE(derivePreview({title}, 2, 1, {shot}).latest, QStringLiteral("chart.png"));
     }
+
+    void aPreviewLineIsBoundedNoMatterHowLargeTheText()
+    {
+        QString million;
+        million.fill(u'a', 1'000'000);
+
+        const auto p = derivePreview({Item::makeText(million)}, 1, 0);
+        QVERIFY2(p.primary.size() <= 256, "preview line not truncated");
+    }
 };
 
 QTEST_APPLESS_MAIN(TestPreview)

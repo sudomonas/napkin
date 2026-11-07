@@ -443,6 +443,7 @@ private slots:
     void aBackgroundSaveThatFailsAfterARebuildLosesNothing()
     {
         GuiFixture f{GuiFixture::OnDisk{}};
+        f.window.saverForTest()->setBusyTimeoutForTest(100);
         // The failure says so in a dialog; answer it.
         QTimer closer;
         QObject::connect(&closer, &QTimer::timeout, [] {
@@ -460,7 +461,7 @@ private slots:
         // Held past busy_timeout, the worker gives up. Waiting on the failure
         // itself, not on "idle": autosave retries at once, into the same lock.
         QSignalSpy failed(f.window.saverForTest(), &BackgroundSaver::failed);
-        QTRY_VERIFY_WITH_TIMEOUT(failed.size() >= 1, 8000);
+        QTRY_VERIFY_WITH_TIMEOUT(failed.size() >= 1, 3000);
         lock->release();
         auto* card = f.canvas()->findChildren<TextItemCard*>().first();
         QVERIFY(card->text().endsWith(QStringLiteral("KEEP")));

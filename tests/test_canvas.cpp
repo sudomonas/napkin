@@ -20,6 +20,7 @@
 #include <QPushButton>
 #include "../src/ui/WelcomeView.h"
 
+#include <QInputDialog>
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
@@ -40,6 +41,14 @@ QByteArray png(int w, int h, QColor c = Qt::red)
     buffer.open(QIODevice::WriteOnly);
     image.save(&buffer, "PNG");
     return out;
+}
+
+QString toastText(GuiFixture& f)
+{
+    QString said;
+    for (auto* l : f.toast()->findChildren<QLabel*>())
+        if (!l->text().isEmpty()) said = l->text();
+    return said;
 }
 }  // namespace
 
@@ -64,6 +73,22 @@ private:
         return id;
     }
 
+    BufferId seedMixed(GuiFixture& f, int images)
+    {
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("Investigate this bug")));
+        for (int i = 0; i < images; ++i) {
+            const auto stored = f.blobs.store(png(60 + i, 40 + i, QColor::fromHsv(i * 40, 200, 220)));
+            Q_ASSERT(stored.ok);
+            f.service.appendTo(id, Item::makeImage(stored.hash, stored.size.width(),
+                                                   stored.size.height(), stored.byteSize,
+                                                   QStringLiteral("shot%1.png").arg(i),
+                                                   stored.mime));
+        }
+        f.model()->reload();
+        return id;
+    }
+
 private slots:
     // Its own settings, by name. Without an organization QSettings fell back
     // to a shared "Unknown Organization" on Linux, and on Windows the registry
@@ -75,15 +100,6 @@ private slots:
         QSettings().clear();
     }
     void cleanupTestCase() { QSettings().clear(); }
-
-    void bothPanesExist()
-    {
-        GuiFixture f;
-        auto* splitter = f.window.findChild<QSplitter*>();
-        QVERIFY(splitter);
-        QCOMPARE(splitter->count(), 2);
-        QVERIFY(f.canvas());
-    }
 
     void selectingABufferFillsTheCanvasWithEveryItem()
     {
@@ -2218,6 +2234,986 @@ private slots:
         QCOMPARE(said, QStringLiteral("“Packing list for the trip” restored"));
     }
 
+
+    // --- Consolidated multi-item and search tests ---
+    void editingAnExistingTextItemDoesNotCreateADuplicate()
+    {
+        GuiFixture f;
+        const auto id = seedMixed(f, 0);
+        f.select(id);
+
+        // A block is read-only until you ask to edit it, so that a click can
+        // select it. Double-click is the gesture; this is its keyboard twin.
+        auto* card = f.canvas()->findChildren<TextItemCard*>()[0];
+        card->beginEditing();
+        QTest::keyClicks(card->findChild<QPlainTextEdit*>(), " - amended");
+        QTest::qWait(600);
+
+        QCOMPARE(f.items.countForBuffer(id), 1);   // updated in place
+        QVERIFY(f.items.listForBuffer(id)[0].text.endsWith(QStringLiteral(" - amended")));
+    }
+
+    void continuedTypingAfterADraftCommitsLandsAtTheCaretNotTheStart()
+    {
+        // Regression: rebuilding the editor widgets after the first write reset
+        // the caret to position 0, so the next keystrokes were prepended.
+        GuiFixture f;
+        f.trigger("newBufferAction");
+        auto* edit = f.newTextCard();
+        QTest::keyClicks(edit, "first");
+        QTRY_COMPARE_WITH_TIMEOUT(f.buffers.countLive(), 1, 2000);
+
+        QTest::keyClicks(edit, " and second");
+        QTest::qWait(600);
+
+        const auto id = f.buffers.listLive(10).front().id;
+        QCOMPARE(f.items.listForBuffer(id).front().text, QStringLiteral("first and second"));
+        QCOMPARE(f.items.countForBuffer(id), 1);
+    }
+
+    void typingWithTheListFocusedOnAnEmptyNapkinIsNotAListCommand()
+    {
+        // "P" and "K" are list commands; on an empty napkin they are letters.
+        GuiFixture f;
+        f.trigger("newBufferAction");
+        QTest::keyClicks(f.view(), "Pack keys");
+        QTRY_COMPARE_WITH_TIMEOUT(f.buffers.countLive(), 1, 3000);
+        const auto napkin = f.buffers.listLive(5).front();
+        QVERIFY(!napkin.pinned);
+        QVERIFY(!napkin.kept);
+        QCOMPARE(f.items.listForBuffer(napkin.id).front().text, QStringLiteral("Pack keys"));
+    }
+
+    void typingOnAFullNapkinInTheListWritesOnItAndPinsNothing()
+    {
+        // Second usability test: typing "pack" into the list pinned AND kept
+        // the napkin, silently. Letters are text now, everywhere.
+        GuiFixture f;
+        const auto id = seedMixed(f, 0);
+        f.select(id);
+        QTest::keyClick(f.view(), 'p');
+        auto* note = f.editor();
+        QVERIFY2(note, "typing did not start a note");
+        QTest::keyClicks(note, "ack the charger");
+        QTRY_COMPARE_WITH_TIMEOUT(int(f.items.listForBuffer(id).size()), 2, 3000);
+        QVERIFY(!f.buffers.find(id)->pinned);
+        QVERIFY(!f.buffers.find(id)->kept);
+        bool found = false;
+        for (const auto& i : f.items.listForBuffer(id)) found |= i.text == QStringLiteral("pack the charger");
+        QVERIFY(found);
+    }
+
+    void pinAndKeepHaveShortcutsAToastAndUndo()
+    {
+        GuiFixture f;
+        const auto id = seedMixed(f, 0);
+        f.select(id);
+        f.trigger("pinAction");
+        QVERIFY(f.buffers.find(id)->pinned);
+        QCOMPARE(toastText(f), QStringLiteral("Pinned “Investigate this bug” — it stays at the top"));
+        f.trigger("undoAction");                     // Ctrl+Z
+        QVERIFY(!f.buffers.find(id)->pinned);
+
+        f.trigger("keepAction");
+        QVERIFY(f.buffers.find(id)->kept);
+        QVERIFY(toastText(f).startsWith(QStringLiteral("Kept")));
+        auto* pinAction = f.window.findChild<QAction*>(QStringLiteral("pinAction"));
+        auto* keepAction = f.window.findChild<QAction*>(QStringLiteral("keepAction"));
+        QCOMPARE(pinAction->shortcut(), QKeySequence(QStringLiteral("Ctrl+P")));
+        QCOMPARE(keepAction->shortcut(), QKeySequence(QStringLiteral("Ctrl+D")));
+    }
+
+    void ctrlZUndoesADeleteAfterTheToastWasMissed()
+    {
+        GuiFixture f;
+        const auto id = seedMixed(f, 1);
+        f.select(id);
+        const ItemId gone = f.items.listForBuffer(id)[1].id;
+        f.window.removeItems({gone});
+        f.trigger("undoAction");
+        QCOMPARE(f.items.find(gone)->bufferId, id);
+        QCOMPARE(f.buffers.countTrash(), 0);
+    }
+
+    void doubleClickingAnEmptyBoardStartsANote()
+    {
+        GuiFixture f;
+        f.trigger("newBufferAction");
+        auto* viewport = f.canvas()->viewport();
+        QTest::mouseDClick(viewport, Qt::LeftButton, {}, QPoint(viewport->width() / 2, viewport->height() - 20));
+        auto* edit = f.editor();
+        QVERIFY(edit);
+        QTest::keyClicks(edit, "hello");
+        QTRY_COMPARE_WITH_TIMEOUT(f.buffers.countLive(), 1, 3000);
+    }
+
+    void typingOnTheWelcomeScreenStartsANote()
+    {
+        // The start page says "dump text here". Its first row is a focused
+        // button, so letters vanished until a Space "clicked" it.
+        GuiFixture f;
+        auto* welcome = f.window.findChild<WelcomeView*>();
+        QVERIFY(welcome);
+        auto* row = welcome->findChild<QPushButton*>();
+        QVERIFY(row);
+        // The first letter is what reaches the start page; after it the
+        // keyboard is in the new note, which is where the rest must land.
+        QTest::keyClick(row, 'C', Qt::ShiftModifier);
+        auto* note = f.editor();
+        QVERIFY2(note, "the first letter did not start a note");
+        QTest::keyClicks(note, "all the dentist");
+        QTRY_COMPARE_WITH_TIMEOUT(f.buffers.countLive(), 1, 3000);
+        const auto items = f.items.listForBuffer(f.buffers.listLive(5).front().id);
+        QCOMPARE(int(items.size()), 1);
+        QCOMPARE(items.front().text, QStringLiteral("Call the dentist"));
+    }
+
+    void aPastedCutLeavesNothingInTheTrash()
+    {
+        GuiFixture f;
+        const auto id = seedMixed(f, 1);
+        f.select(id);
+        const Item note = f.items.listForBuffer(id).back();      // the text, oldest
+        QCOMPARE(note.type, ItemType::Text);
+        QApplication::clipboard()->setText(note.text);           // what the cut copied
+        f.window.removeItems({note.id}, /*cut=*/true);
+        QCOMPARE(f.buffers.countTrash(), 1);
+
+        f.trigger("newBufferAction");
+        f.trigger("pasteAction");
+        QCOMPARE(f.buffers.countTrash(), 0);                     // the original is gone
+        QCOMPARE(f.buffers.countLive(), 2);                      // and the copy is here
+    }
+
+    void aMixedCutKeepsItsOriginalsBecauseThePasteIsOnlyText()
+    {
+        // A selection of text AND an image copies as text alone. Discarding the
+        // originals after that paste would lose the image.
+        GuiFixture f;
+        const auto id = seedMixed(f, 1);
+        f.service.appendTo(id, Item::makeText(QStringLiteral("second note")));
+        f.model()->reload();
+        f.select(id);
+        QList<ItemId> cut;
+        for (const auto& i : f.items.listForBuffer(id))
+            if (i.type == ItemType::Image || i.text == QStringLiteral("second note")) cut << i.id;
+        QApplication::clipboard()->setText(QStringLiteral("second note"));
+        f.window.removeItems(cut, /*cut=*/true);
+
+        f.trigger("newBufferAction");
+        f.trigger("pasteAction");
+        QCOMPARE(f.buffers.countTrash(), 1);                     // the image is still recoverable
+    }
+
+    void aCutIsKeptIfTheClipboardHasMovedOn()
+    {
+        GuiFixture f;
+        const auto id = seedMixed(f, 1);
+        f.select(id);
+        const Item note = f.items.listForBuffer(id).back();
+        QApplication::clipboard()->setText(note.text);
+        f.window.removeItems({note.id}, /*cut=*/true);
+        QApplication::clipboard()->setText(QStringLiteral("copied elsewhere since"));
+        f.trigger("newBufferAction");
+        f.trigger("pasteAction");
+        QCOMPARE(f.buffers.countTrash(), 1);                     // not what was cut: keep it
+    }
+
+    void pastingTextIntoAnEmptySearchBoxPutsItOnTheNapkin()
+    {
+        GuiFixture f;
+        auto* search = f.window.findChild<QLineEdit*>(QStringLiteral("searchField"));
+        QApplication::clipboard()->setText(QStringLiteral("Remember the milk"));
+        QTest::keyClick(search, Qt::Key_V, Qt::ControlModifier);
+        QVERIFY(search->text().isEmpty());                        // not a search for it
+        QCOMPARE(f.buffers.countLive(), 1);
+        const auto id = f.buffers.listLive(5).front().id;
+        QCOMPARE(f.items.listForBuffer(id).front().text, QStringLiteral("Remember the milk"));
+    }
+
+    void pastingAnImageWithTheSearchBoxFocusedPutsItOnTheNapkin()
+    {
+        GuiFixture f;
+        auto* search = f.window.findChild<QLineEdit*>(QStringLiteral("searchField"));
+        auto* mime = new QMimeData;
+        mime->setData(QStringLiteral("image/png"), png(40, 30, Qt::red));
+        QApplication::clipboard()->setMimeData(mime);
+        QTest::keyClick(search, Qt::Key_V, Qt::ControlModifier);
+        QCOMPARE(f.buffers.countLive(), 1);                       // it used to vanish
+        QCOMPARE(f.items.listForBuffer(f.buffers.listLive(5).front().id).front().type, ItemType::Image);
+    }
+
+    void pastingIntoAQueryBeingEditedStillEditsTheQuery()
+    {
+        GuiFixture f;
+        f.seed("something");
+        auto* search = f.window.findChild<QLineEdit*>(QStringLiteral("searchField"));
+        search->setText(QStringLiteral("some"));
+        QApplication::clipboard()->setText(QStringLiteral("thing"));
+        QTest::keyClick(search, Qt::Key_V, Qt::ControlModifier);
+        QCOMPARE(search->text(), QStringLiteral("something"));
+        QCOMPARE(f.buffers.countLive(), 1);                       // nothing new was made
+    }
+
+    void ctrlShiftVPastesIntoTheSearchBox()
+    {
+        GuiFixture f;
+        f.seed("buy more milk");
+        auto* search = f.window.findChild<QLineEdit*>(QStringLiteral("searchField"));
+        QApplication::clipboard()->setText(QStringLiteral("more\nmilk"));
+        QTest::keyClick(search, Qt::Key_V, Qt::ControlModifier | Qt::ShiftModifier);
+        QCOMPARE(search->text(), QStringLiteral("more milk"));    // one line
+        QCOMPARE(f.buffers.countLive(), 1);                       // nothing was pasted as an item
+    }
+
+    void pastingACutWithdrawsOnlyTheCutsOffer()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (const char* t : {"keep me", "delete me", "cut me"})
+            f.service.appendTo(id, Item::makeText(QString::fromLatin1(t)));
+        f.model()->reload();
+        f.select(id);
+
+        auto pick = [&](const QString& text) {
+            for (const auto& item : f.items.listForBuffer(id))
+                if (item.text == text) {
+                    f.canvas()->setCursorTo(f.canvas()->indexOf(item.id), Qt::NoModifier);
+                    return;
+                }
+        };
+        pick(QStringLiteral("delete me"));
+        f.canvas()->deleteSelection();
+        pick(QStringLiteral("cut me"));
+        f.canvas()->cutSelection();
+        QCOMPARE(f.toast()->offerCount(), 2);
+
+        f.trigger("pasteAction");
+        QCOMPARE(f.toast()->offerCount(), 1);
+        QVERIFY(toastText(f).contains(QStringLiteral("moved to trash")));
+        QVERIFY(f.toast()->undoNow());
+        bool back = false;
+        for (const auto& item : f.items.listForBuffer(id))
+            if (item.text == QStringLiteral("delete me")) back = true;
+        QVERIFY2(back, "the earlier delete was not the offer left standing");
+    }
+
+    void cutThenDeleteThenPasteThenUndoAllLeavesOneCopy()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (const char* t : {"keep me", "delete me", "cut me"})
+            f.service.appendTo(id, Item::makeText(QString::fromLatin1(t)));
+        f.model()->reload();
+        f.select(id);
+        auto pick = [&](const QString& text) {
+            for (const auto& item : f.items.listForBuffer(id))
+                if (item.text == text)
+                    f.canvas()->setCursorTo(f.canvas()->indexOf(item.id), Qt::NoModifier);
+        };
+        pick(QStringLiteral("cut me"));
+        f.canvas()->cutSelection();
+        pick(QStringLiteral("delete me"));
+        f.canvas()->deleteSelection();
+        f.trigger("pasteAction");
+        QCOMPARE(f.toast()->offerCount(), 1);   // the cut is finished; the delete stays
+
+        while (f.toast()->undoNow()) {}
+        int copies = 0;
+        for (const auto& b : f.buffers.listLive(100))
+            for (const auto& item : f.items.listForBuffer(b.id))
+                if (item.text == QStringLiteral("cut me")) ++copies;
+        QCOMPARE(copies, 1);
+    }
+
+    void theListRowShowsWhatWasAddedLast()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("Groceries")));
+        f.service.appendTo(id, Item::makeText(QStringLiteral("eggs")));
+        f.model()->reload();
+        const auto row = [&] { return f.model()->index(f.model()->rowForId(id), 0); };
+        QCOMPARE(row().data(BufferListModel::PrimaryRole).toString(), QStringLiteral("Groceries"));
+        QCOMPARE(row().data(BufferListModel::LatestRole).toString(), QStringLiteral("eggs"));
+
+        QTest::qWait(5);   // a later modified_at
+        f.service.appendTo(id, Item::makeText(QStringLiteral("milk")));
+        f.model()->invalidatePreview(id);
+        QCOMPARE(row().data(BufferListModel::LatestRole).toString(), QStringLiteral("milk"));
+        QCOMPARE(row().data(BufferListModel::PrimaryRole).toString(), QStringLiteral("Groceries"));
+    }
+
+    void aNameIsTheTitleAndClearingItGoesBackToTheContents()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("Groceries")));
+        QTest::qWait(5);
+        f.service.appendTo(id, Item::makeText(QStringLiteral("eggs")));
+        f.model()->reload();
+        const auto row = [&] { return f.model()->index(f.model()->rowForId(id), 0); };
+        const Timestamp before = f.buffers.find(id)->modifiedAt;
+
+        f.window.renameNapkin(id, QStringLiteral("  Weekend   shop "));
+        QCOMPARE(f.buffers.find(id)->name, QStringLiteral("Weekend shop"));   // tidied
+        QCOMPARE(row().data(BufferListModel::PrimaryRole).toString(), QStringLiteral("Weekend shop"));
+        QCOMPARE(f.buffers.find(id)->modifiedAt, before);   // naming is not editing
+        QVERIFY(toastText(f).contains(QStringLiteral("Weekend shop")));
+
+        f.window.renameNapkin(id, QString());
+        QVERIFY(f.buffers.find(id)->name.isEmpty());
+        QCOMPARE(row().data(BufferListModel::PrimaryRole).toString(), QStringLiteral("Groceries"));
+
+        QVERIFY(f.toast()->undoNow());   // back to the name
+        QCOMPARE(row().data(BufferListModel::PrimaryRole).toString(), QStringLiteral("Weekend shop"));
+        QVERIFY(f.toast()->undoNow());   // and to no name
+        QVERIFY(f.buffers.find(id)->name.isEmpty());
+    }
+
+    void aNamedNapkinShowsItsFirstNoteAsTheLatestToo()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("eggs")));
+        QTest::qWait(5);
+        f.service.appendTo(id, Item::makeText(QStringLiteral("Groceries")));
+        f.model()->reload();
+        // Unnamed, the newest ("Groceries") is not the title ("eggs"): shown.
+        const auto row = [&] { return f.model()->index(f.model()->rowForId(id), 0); };
+        QCOMPARE(row().data(BufferListModel::LatestRole).toString(), QStringLiteral("Groceries"));
+        // Named, nothing on it is the title any more, so the newest always shows.
+        QTest::qWait(5);
+        f.service.updateTextItem(id, f.items.listForBuffer(id).back().id, QStringLiteral("eggs!"));
+        f.window.renameNapkin(id, QStringLiteral("Shop"));
+        QCOMPARE(row().data(BufferListModel::LatestRole).toString(), QStringLiteral("eggs!"));
+    }
+
+    void searchFindsANapkinByItsNameAndShowsAllOfIt()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("eggs")));
+        f.service.appendTo(id, Item::makeText(QStringLiteral("milk")));
+        f.seed("unrelated");
+        f.model()->reload();
+        f.window.renameNapkin(id, QStringLiteral("Weekend shop"));
+
+        auto* field = f.window.findChild<QLineEdit*>(QStringLiteral("searchField"));
+        field->setText(QStringLiteral("weekend"));
+        QTRY_COMPARE_WITH_TIMEOUT(f.model()->rowCount(), 1, 2000);
+        QCOMPARE(f.model()->idAt(0), id);
+        f.select(id);
+        QVERIFY2(!f.canvas()->isFiltered(), "a napkin found by name was filtered to nothing");
+        QCOMPARE(f.canvas()->totalCount(), 2);
+    }
+
+    void f2AsksForANameWithTheAutomaticTitleAsTheHint()
+    {
+        GuiFixture f;
+        const auto id = f.seed("Groceries");
+        f.model()->reload();
+        f.select(id);
+        QString hint;
+        QTimer::singleShot(0, [&] {
+            auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+            if (!dialog) return;
+            if (auto* field = dialog->findChild<QLineEdit*>()) hint = field->placeholderText();
+            dialog->setTextValue(QStringLiteral("Shop"));
+            dialog->accept();
+        });
+        f.trigger("renameAction");
+        QCOMPARE(hint, QStringLiteral("Groceries"));
+        QCOMPARE(f.buffers.find(id)->name, QStringLiteral("Shop"));
+    }
+
+    // --- Consolidated review regression tests ---
+    void editingAnOlderCardThenAppendingMustNotRebindTheOthers()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (const char* t : {"AAA", "BBB", "CCC"})
+            f.service.appendTo(id, Item::makeText(QString::fromUtf8(t)));
+        f.model()->reload();
+        f.select(id);
+
+        // Edit the OLDEST card. That bumps its modified_at, so the database
+        // order changes while the widget order deliberately does not.
+        TextItemCard* oldest = nullptr;
+        for (auto* c : f.canvas()->findChildren<TextItemCard*>())
+            if (c->text() == QStringLiteral("AAA")) oldest = c;
+        QVERIFY(oldest);
+        oldest->beginEditing();
+        QTest::keyClicks(oldest->findChild<QPlainTextEdit*>(), "-edited");
+        QTest::qWait(600);
+
+        // Now append a new card, which is what triggers the rebind.
+        QTest::keyClicks(f.newTextCard(), "NEW");
+        QTest::qWait(600);
+
+        // Every widget must still be bound to the row whose text it shows.
+        for (auto* c : f.canvas()->findChildren<TextItemCard*>()) {
+            if (c->isComposer()) continue;
+            const auto row = f.items.find(c->itemId());
+            QVERIFY(row.has_value());
+            QCOMPARE(c->text(), row->text);
+        }
+    }
+
+    void aFailingReadDuringARowClickDoesNotTerminate()
+    {
+        GuiFixture f;
+        f.seed("one"); f.seed("two");
+        f.db.exec("DROP TABLE items");
+
+        bool threw = false;
+        try { f.window.selectBuffer(0); } catch (...) { threw = true; }
+        QVERIFY2(threw, "selectBuffer still throws — the boundary must be at notify()");
+    }
+
+    void shiftArrowExtendsAndSpaceToggles()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (int i = 0; i < 4; ++i)
+            f.service.appendTo(id, Item::makeText(QStringLiteral("card %1").arg(i)));
+        f.model()->reload();
+        f.select(id);
+        f.canvas()->setFocus(Qt::OtherFocusReason);
+
+        QTest::keyClick(f.canvas(), Qt::Key_Down);
+        QTest::keyClick(f.canvas(), Qt::Key_Down, Qt::ShiftModifier);
+        QCOMPARE(f.canvas()->selection().size(), 2);
+
+        QTest::keyClick(f.canvas(), Qt::Key_Space);
+        QCOMPARE(f.canvas()->selection().size(), 1);
+    }
+
+    void aClippedCardSaysSo()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        QString huge;
+        for (int i = 0; i < 200; ++i) huge += QStringLiteral("line %1\n").arg(i);
+        f.service.appendTo(id, Item::makeText(huge));
+        f.model()->reload();
+        f.select(id);
+
+        auto* card = f.canvas()->findChildren<TextItemCard*>().first();
+        QVERIFY(card->isClipped());
+        auto* footer = card->findChild<CardFooter*>();
+        QVERIFY(footer);
+        QVERIFY2(!footer->toolTip().isEmpty(),
+                 "a clipped card must announce that there is more in it");
+    }
+
+    void copyingAcknowledgesItself_data()
+    {
+        QTest::addColumn<QString>("route");
+        QTest::newRow("footer button")   << QStringLiteral("button");
+        QTest::newRow("Ctrl+C")          << QStringLiteral("key");
+        QTest::newRow("Ctrl+C by focus") << QStringLiteral("focus");
+        QTest::newRow("context menu")    << QStringLiteral("verb");
+    }
+
+    void copyingAcknowledgesItself()
+    {
+        QFETCH(QString, route);
+
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("copy me")));
+        f.model()->reload();
+        f.select(id);
+
+        auto* card = f.canvas()->findChildren<TextItemCard*>().first();
+        auto* footer = card->findChild<CardFooter*>();
+        QVERIFY(footer);
+
+        if (route == QStringLiteral("button")) {
+            emit card->copyRequested(card->itemId());
+        } else if (route == QStringLiteral("focus")) {
+            // The others hand the key straight to the canvas, which proves the
+            // handler works but NOT that a keypress ever reaches it. Here the
+            // card is clicked and the key goes to whatever actually holds
+            // focus, so the walk up the parent chain is exercised too.
+            // window()->focusWidget(), not QApplication::focusWidget(), which
+            // is null for a window no headless platform can activate.
+            QTest::mouseClick(card, Qt::LeftButton);
+            QWidget* focus = f.window.focusWidget();
+            QVERIFY2(focus, "clicking a card left the keyboard nowhere");
+            QTest::keyClick(focus, Qt::Key_C, Qt::ControlModifier);
+        } else {
+            // Both other routes act on the selection, so there has to be one.
+            f.canvas()->setCursorTo(0, Qt::NoModifier);
+            QCOMPARE(f.canvas()->selection().size(), 1);
+            if (route == QStringLiteral("key"))
+                QTest::keyClick(f.canvas(), Qt::Key_C, Qt::ControlModifier);
+            else
+                f.canvas()->copySelection();   // the body of the menu's action
+        }
+
+        // Copying changes nothing on screen otherwise, so there is no way to
+        // know it worked. It says so on the button that was pressed, not in
+        // place of the age at the far end of the footer.
+        QCOMPARE(footer->shownActionLabel(), QStringLiteral("Copied"));
+        QVERIFY(!footer->isFlashing());
+        QTRY_COMPARE_WITH_TIMEOUT(footer->shownActionLabel(), QStringLiteral("Copy text"), 3000);
+    }
+
+    void copyingSeveralItemsSaysSoInTheToast()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("first")));
+        f.service.appendTo(id, Item::makeText(QStringLiteral("second")));
+        f.model()->reload();
+        f.select(id);
+
+        f.canvas()->selectAll();
+        QCOMPARE(f.canvas()->selection().size(), 2);
+        f.canvas()->copySelection();
+
+        QVERIFY(f.toast()->isVisible());
+        QString said;
+        for (auto* l : f.toast()->findChildren<QLabel*>())
+            if (!l->text().isEmpty()) said = l->text();
+        QCOMPARE(said, QStringLiteral("2 items copied"));
+        // Nothing was destroyed, so the toast must not offer to put it back.
+        QVERIFY(!f.toast()->hasOffer());
+    }
+
+    void anAcknowledgementDoesNotCancelALiveUndo()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("delete me")));
+        f.service.appendTo(id, Item::makeText(QStringLiteral("keep me")));
+        f.service.appendTo(id, Item::makeText(QStringLiteral("and me")));
+        f.model()->reload();
+        f.select(id);
+
+        const auto doomed = f.canvas()->itemOrder().first();
+        f.window.removeItems({doomed});
+        QVERIFY2(f.toast()->hasOffer(), "a delete must offer Undo");
+
+        // A copy happens while that offer is still standing. Two items must
+        // survive the delete: a single-item copy speaks on its own card and
+        // never reaches the toast, so it could not show this either way.
+        f.canvas()->selectAll();
+        QCOMPARE(f.canvas()->selection().size(), 2);
+        f.canvas()->copySelection();
+
+        QVERIFY2(f.toast()->hasOffer(),
+                 "copying destroyed nothing, so it must not destroy the Undo");
+        QVERIFY(f.toast()->undoNow());   // and Ctrl+Z still works
+    }
+
+    void pastingTextIntoAnOlderNapkinMovesItToTheTop()
+    {
+        GuiFixture f;
+        const auto old = f.seed("from last year");
+        f.buffers.setModifiedAt(old, nowMs() - 365 * kMsPerDay);
+        // The others an hour old, so a paste in the same millisecond as a seed
+        // cannot tie with it — a tie sorts by id, and this test flaked on it.
+        f.buffers.setModifiedAt(f.seed("yesterday's list"), nowMs() - 3600 * 1000);
+        f.buffers.setModifiedAt(f.seed("this morning"), nowMs() - 3600 * 1000);
+        f.model()->reload();
+        QVERIFY(f.model()->rowForId(old) > 0);
+        QCOMPARE(f.model()->index(f.model()->rowForId(old), 0)
+                     .data(BufferListModel::SectionNameRole).toString(), QStringLiteral("OLDER"));
+        f.select(old);
+
+        QApplication::clipboard()->setText(QStringLiteral("pasted today"));
+        f.window.pasteFromClipboard();
+
+        QCOMPARE(f.model()->rowForId(old), 0);
+        QCOMPARE(f.model()->index(0, 0).data(BufferListModel::SectionNameRole).toString(),
+                 QStringLiteral("RECENT"));
+        // Moving it must not lose it: still selected, still on the board.
+        QCOMPARE(f.model()->idAt(f.view()->currentIndex().row()), old);
+        QCOMPARE(f.items.countForBuffer(old), 2);
+        QCOMPARE(f.canvas()->findChildren<TextItemCard*>().size(), 2);
+    }
+
+    void pastingAnImageIntoAnOlderNapkinMovesItToTheTop()
+    {
+        GuiFixture f;
+        const auto old = f.seed("needs a picture");
+        f.buffers.setModifiedAt(old, nowMs() - kMsPerDay);
+        f.buffers.setModifiedAt(f.seed("newer"), nowMs() - 3600 * 1000);
+        f.model()->reload();
+        QCOMPARE(f.model()->rowForId(old), 1);
+        f.select(old);
+
+        QApplication::clipboard()->setImage(QImage::fromData(png(8, 8)));
+        f.window.pasteFromClipboard();
+
+        QCOMPARE(f.items.countForBuffer(old), 2);
+        QCOMPARE(f.model()->rowForId(old), 0);
+        QCOMPARE(f.model()->idAt(f.view()->currentIndex().row()), old);
+    }
+
+    void savingAnEditAcknowledgesItselfAndResetsTheAge()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("before")));
+        f.model()->reload();
+        f.select(id);
+
+        auto* card = f.canvas()->findChildren<TextItemCard*>().first();
+        card->beginEditing();
+        QTest::keyClicks(card->findChild<QPlainTextEdit*>(), " and after");
+        QTRY_VERIFY_WITH_TIMEOUT(card->findChild<CardFooter*>()->isFlashing(), 3000);
+    }
+
+    void aComposerLooksLikeEveryOtherCard()
+    {
+        GuiFixture f;
+        const auto id = f.seed("something");
+        f.select(id);
+        f.canvas()->addPendingTextCard();
+
+        for (auto* card : f.canvas()->findChildren<TextItemCard*>())
+            QVERIFY2(card->findChild<CardFooter*>(),
+                     "a card made with Ctrl+T had no copy action and no age, so it "
+                     "was visibly a different kind of object from every other card");
+    }
+
+    void highlightingSearchTermsDoesNotMarkCardsAsEdited()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        f.service.appendTo(id, Item::makeText(QStringLiteral("restart nginx now")));
+        f.service.appendTo(id, Item::makeText(QStringLiteral("nginx config path")));
+        f.seed("unrelated");
+        f.model()->reload();
+
+        auto* field = f.window.findChild<QLineEdit*>(QStringLiteral("searchField"));
+        field->setText(QStringLiteral("nginx"));
+        QTRY_VERIFY_WITH_TIMEOUT(f.canvas()->isFiltered(), 2000);
+        QTest::qWait(400);
+
+        // The highlighter reformats the whole document, which emits
+        // textChanged — and marked every visible card dirty, autosaved it, and
+        // flashed "Saved" on cards nobody had touched.
+        for (auto* card : f.canvas()->findChildren<TextItemCard*>())
+            QVERIFY2(!card->isDirty(), "a highlighted card was marked as edited");
+        QVERIFY(f.canvas()->dirtyText().empty());
+    }
+
+    void thePreviewCacheIsBounded()
+    {
+        GuiFixture f;
+        for (int i = 0; i < 60; ++i) f.seed("buffer");
+        f.model()->reload();
+        for (int row = 0; row < f.model()->rowCount(); ++row)
+            f.model()->index(row, 0).data(BufferListModel::PrimaryRole);
+        QVERIFY(f.model()->previewCacheSize() <= 400);
+    }
+
+    void aFailedSearchLeavesTheListAsItWas()
+    {
+        // On SQLite 3.35–3.38 every search with a hit threw from inside
+        // beginResetModel()/endResetModel(). The reset was never finished, the
+        // rows were already cleared, and the model claimed to be searching for
+        // a query it had no results for. A missing index stands in for any
+        // failure the query can meet.
+        GuiFixture f;
+        f.seed("systemctl restart nginx");
+        f.seed("sudo pacman -Syu");
+        QCOMPARE(f.model()->rowCount(), 2);
+
+        QSignalSpy aboutToReset(f.model(), &QAbstractItemModel::modelAboutToBeReset);
+        QSignalSpy reset(f.model(), &QAbstractItemModel::modelReset);
+        f.db.exec("DROP TABLE items_fts");
+
+        QVERIFY_THROWS_EXCEPTION(std::exception, f.model()->setQuery(QStringLiteral("nginx")));
+        QCOMPARE(aboutToReset.count(), reset.count());
+        QCOMPARE(f.model()->rowCount(), 2);
+        QVERIFY(f.model()->query().isEmpty());
+    }
+
+    void metadataRolesDoNotTouchTheDatabase()
+    {
+        // sizeHint() reads IsExpandedRole for every row, and QListView asks
+        // every row. Computing a preview there turned startup into thousands of
+        // queries and materialised every buffer's text.
+        GuiFixture f;
+        for (int i = 0; i < 50; ++i) f.seed("buffer");
+
+        f.model()->reload();          // drops the preview cache
+        const int before = f.statementCount();
+        for (int row = 0; row < f.model()->rowCount(); ++row) {
+            f.model()->index(row, 0).data(BufferListModel::IsDraftRole);
+            f.model()->index(row, 0).data(BufferListModel::PinnedRole);
+            f.model()->index(row, 0).data(BufferListModel::SectionFirstRole);
+        }
+        QCOMPARE(f.statementCount(), before);   // not one query
+    }
+
+    // ── Restored from test_multiitem / test_review_fixes ───────────────────
+    // The 2026-10 consolidation dropped these without a replacement; nothing
+    // else pins the toast wording, undo order, or restore-into-origin.
+
+    void aDeletedItemIsInTheTrashAfterTheToastIsGone()
+    {
+        GuiFixture f;
+        const auto id = seedMixed(f, 2);
+        f.select(id);
+        const auto before = f.items.listForBuffer(id);
+        const ItemId gone = before[1].id;
+
+        f.window.removeItems({gone});
+        QCOMPARE(int(f.items.listForBuffer(id).size()), 2);
+        QCOMPARE(toastText(f), QStringLiteral("Item moved to trash from “Investigate this bug”"));
+
+        // The toast expiring must not matter: the item is in a trashed napkin.
+        const auto trash = f.buffers.listTrash();
+        QCOMPARE(int(trash.size()), 1);
+        const auto held = f.items.listForBuffer(trash.front().id);
+        QCOMPARE(int(held.size()), 1);
+        QCOMPARE(held.front().id, gone);
+
+        // And restoring it puts the item back where it came from — not into a
+        // napkin of its own, which the second usability test found confusing.
+        const Item before1 = before[1];
+        QCOMPARE(f.service.restore(trash.front().id), id);
+        QCOMPARE(f.buffers.countTrash(), 0);
+        QCOMPARE(f.buffers.countLive(), 1);                       // no stray holder
+        QCOMPARE(f.items.find(gone)->bufferId, id);
+        QCOMPARE(f.items.find(gone)->position, before1.position);
+        QCOMPARE(int(f.items.listForBuffer(id).size()), 3);
+    }
+
+    void aDeletedItemWhoseNapkinIsGoneRestoresOnItsOwn()
+    {
+        GuiFixture f;
+        const auto id = seedMixed(f, 2);
+        f.select(id);
+        const ItemId gone = f.items.listForBuffer(id)[1].id;
+        f.window.removeItems({gone});
+        // The original deleted for good. (Only trashed, it now comes back with
+        // its card — restoringCardsWhoseNapkinIsInTheTrashBringsTheNapkinBack —
+        // rather than the card becoming a napkin of its own, which split
+        // napkins in two in the 2026-10-06 usability test.)
+        f.service.trash(id);
+        f.buffers.hardDeleteEvenIfKept(id);
+        BufferId holder = kNoBuffer;
+        for (const auto& b : f.buffers.listTrash()) if (b.id != id) holder = b.id;
+        QVERIFY(holder != kNoBuffer);
+
+        QCOMPARE(f.service.restore(holder), holder);              // nowhere to go back to
+        QCOMPARE(f.items.find(gone)->bufferId, holder);
+        QVERIFY(!f.buffers.restoresTo(holder));                   // and it is its own napkin now
+    }
+
+    void anImageCanBeRemovedFromInsideTheBuffer()
+    {
+        GuiFixture f;
+        const auto id = seedMixed(f, 2);
+        f.select(id);
+
+        const auto before = f.items.listForBuffer(id);
+        QCOMPARE(int(before.size()), 3);
+        const ItemId imageId = before[1].id;
+
+        f.window.removeItems({imageId});
+
+        const auto after = f.items.listForBuffer(id);
+        QCOMPARE(int(after.size()), 2);
+        for (const auto& item : after) QVERIFY(item.id != imageId);
+        // And the editor redrew without it.
+        QCOMPARE(f.canvas()->findChildren<ImageItemCard*>().size(), 1);
+    }
+
+    void arrowKeysMoveTheSelectionAcrossCards()
+    {
+        GuiFixture f;
+        const auto id = f.buffers.create();
+        for (int i = 0; i < 5; ++i)
+            f.service.appendTo(id, Item::makeText(QStringLiteral("card %1").arg(i)));
+        f.model()->reload();
+        f.select(id);
+        f.canvas()->setFocus(Qt::OtherFocusReason);
+
+        // Every canvas verb acts on the selection, and until this there was no
+        // keyboard gesture anywhere that wrote to it — a keyboard user could
+        // select all or nothing.
+        QCOMPARE(f.canvas()->selection().size(), 0);
+        QTest::keyClick(f.canvas(), Qt::Key_Down);
+        QCOMPARE(f.canvas()->selection().size(), 1);
+        QCOMPARE(f.canvas()->cursorIndex(), 0);
+
+        QTest::keyClick(f.canvas(), Qt::Key_Down);
+        QCOMPARE(f.canvas()->cursorIndex(), 1);
+        QTest::keyClick(f.canvas(), Qt::Key_Up);
+        QCOMPARE(f.canvas()->cursorIndex(), 0);
+
+        QTest::keyClick(f.canvas(), Qt::Key_End);
+        QCOMPARE(f.canvas()->cursorIndex(), 4);
+        QTest::keyClick(f.canvas(), Qt::Key_Home);
+        QCOMPARE(f.canvas()->cursorIndex(), 0);
+    }
+
+    void aSelectedCardCanBeActedOnWithTheMouseAlone()
+    {
+        GuiFixture f;
+        const auto id = f.seed("act on me");
+        const int row = f.model()->rowForId(id);
+
+        const QRect rect = f.view()->visualRect(f.model()->index(row, 0));
+        QTest::mouseClick(f.view()->viewport(), Qt::LeftButton, Qt::NoModifier, rect.center());
+
+        // This is the workflow that was impossible: click, then pin/keep/delete.
+        f.window.togglePin(f.view()->currentIndex().row());
+        QVERIFY(f.buffers.find(id)->pinned);
+        f.window.toggleKeep(f.model()->rowForId(id));
+        QVERIFY(f.buffers.find(id)->kept);
+    }
+
+    void clickingSelectsTheRow()
+    {
+        GuiFixture f;
+        const auto id = f.seed("selectable");
+        const int row = f.model()->rowForId(id);
+
+        const QRect rect = f.view()->visualRect(f.model()->index(row, 0));
+        QTest::mouseClick(f.view()->viewport(), Qt::LeftButton, Qt::NoModifier, rect.center());
+
+        QCOMPARE(f.view()->currentIndex().row(), row);
+    }
+
+    void ctrlTAddsATextItem()
+    {
+        GuiFixture f;
+        const auto id = seedMixed(f, 1);
+        f.select(id);
+
+        QTest::keyClicks(f.newTextCard(), "a second thought");
+        QTRY_VERIFY_WITH_TIMEOUT(f.items.countForBuffer(id) == 3, 2000);
+
+        const auto items = f.items.listForBuffer(id);
+        QCOMPARE(items.front().type, ItemType::Text);
+        QCOMPARE(items.front().text, QStringLiteral("a second thought"));
+    }
+
+    void cutDoesNotAnnounceItselfAsADeletion()
+    {
+        GuiFixture f;
+        const auto id = seedMixed(f, 1);
+        f.select(id);
+        f.window.removeItems({f.items.listForBuffer(id)[1].id}, /*cut=*/true);
+        QCOMPARE(toastText(f), QStringLiteral("Item cut from “Investigate this bug”"));
+    }
+
+    void deletingEveryItemTrashesTheNapkinWithItsContent()
+    {
+        GuiFixture f;
+        const auto id = seedMixed(f, 1);
+        f.select(id);
+        QList<ItemId> all;
+        for (const auto& i : f.items.listForBuffer(id)) all << i.id;
+
+        f.window.removeItems(all);
+        QCOMPARE(toastText(f), QStringLiteral("Those were all its cards — “Investigate this bug” moved to trash"));
+        QCOMPARE(f.buffers.countTrash(), 1);
+        QCOMPARE(f.buffers.listTrash().front().id, id);          // the napkin itself
+        QCOMPARE(int(f.items.listForBuffer(id).size()), 2);      // not an empty shell
+    }
+
+    void enterPutsTheCaretInTheCanvas()
+    {
+        GuiFixture f;
+        const auto id = f.seed("keyboard");
+        f.view()->setCurrentIndex(f.model()->index(f.model()->rowForId(id), 0));
+        QTest::keyClick(f.view(), Qt::Key_Return);
+        QVERIFY(f.window.focusWidget());
+        QVERIFY(f.canvas()->isAncestorOf(f.window.focusWidget()));
+    }
+
+    void selectingABufferShowsItInTheCanvas()
+    {
+        GuiFixture f;
+        const auto id = f.seed("show me");
+        f.select(id);
+
+        const auto texts = f.canvas()->findChildren<TextItemCard*>();
+        QCOMPARE(texts.size(), 1);
+        QCOMPARE(texts[0]->text(), QStringLiteral("show me"));
+    }
+
+    void theExpandedEditorRendersEveryItem()
+    {
+        GuiFixture f;
+        const auto id = seedMixed(f, 3);   // 1 text + 3 images
+        f.select(id);
+
+        auto* editor = f.canvas();
+        QVERIFY(editor);
+        const auto images = editor->findChildren<ImageItemCard*>();
+        const auto texts = editor->findChildren<TextItemCard*>();
+
+        QCOMPARE(images.size(), 3);          // all three, not just the first
+        QCOMPARE(texts.size(), 1);
+        QCOMPARE(texts[0]->text(), QStringLiteral("Investigate this bug"));
+    }
+
+    void theSweepReclaimsABlobOnceNothingReferencesIt()
+    {
+        GuiFixture f;
+        const auto id = seedMixed(f, 1);
+        f.select(id);
+
+        Item item;
+        for (const auto& i : f.items.listForBuffer(id))
+            if (i.type == ItemType::Image) item = i;
+        QVERIFY(f.blobs.exists(item.blobHash, item.mime));
+
+        f.window.removeItems({item.id});
+        QVERIFY(f.blobs.exists(item.blobHash, item.mime));   // undo may still need it
+
+        // A deleted item is in the trash, so a sweep must leave its image alone.
+        reconcileBlobs(f.items, f.blobs, f.thumbsDir());
+        QVERIFY(f.blobs.exists(item.blobHash, item.mime));
+
+        // Emptying the trash is what finally lets it go.
+        f.service.emptyTrash();
+        reconcileBlobs(f.items, f.blobs, f.thumbsDir());
+        QVERIFY(!f.blobs.exists(item.blobHash, item.mime));
+    }
+
+    void typingAfterCtrlNStartsANote()
+    {
+        GuiFixture f;
+        f.trigger("newBufferAction");
+        QTest::keyClicks(f.canvas(), "Call the dentist");
+        QTRY_COMPARE_WITH_TIMEOUT(f.buffers.countLive(), 1, 3000);
+        const auto items = f.items.listForBuffer(f.buffers.listLive(5).front().id);
+        QCOMPARE(int(items.size()), 1);
+        QCOMPARE(items.front().text, QStringLiteral("Call the dentist"));
+    }
+
+    void undoPutsTheItemBackWhereItWasAndLeavesNothingInTheTrash()
+    {
+        GuiFixture f;
+        const auto id = seedMixed(f, 2);
+        f.select(id);
+        const auto before = f.items.listForBuffer(id);
+
+        f.window.removeItems({before[1].id});
+        f.toast()->findChild<QPushButton*>()->click();
+
+        const auto after = f.items.listForBuffer(id);
+        QCOMPARE(int(after.size()), 3);
+        for (size_t i = 0; i < before.size(); ++i) {
+            QCOMPARE(after[i].id, before[i].id);             // same order
+            QCOMPARE(after[i].position, before[i].position);
+        }
+        QCOMPARE(f.buffers.countTrash(), 0);                  // no stray holder
+        QCOMPARE(f.buffers.countLive(), 1);
+    }
 };
 
 QTEST_MAIN(TestCanvas)

@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QString>
 #include <QThreadPool>
+#include <atomic>
 #include <memory>
 #include <vector>
 
@@ -45,6 +46,10 @@ public:
     // Blocks until every queued save has been written and reported.
     void waitForIdle();
 
+    // Shortens how long the worker waits on a locked database, so a test can
+    // provoke a failed save without waiting out the 3 s default.
+    void setBusyTimeoutForTest(int ms) { busyTimeoutMs_.store(ms); }
+
 signals:
     void saved(BufferId buffer, const std::vector<BackgroundSaver::Entry>& entries,
                Timestamp when);
@@ -54,6 +59,8 @@ private:
     QString     path_;
     QThreadPool pool_;
     int         inFlight_ = 0;
+    std::atomic<int> busyTimeoutMs_{0};   // written on the UI thread, read on the worker
+    int         appliedBusyTimeoutMs_ = 0; // worker thread only
     // Opened on first use, by whichever pool thread runs the job; the pool has
     // one thread at most, so it is never used by two at once.
     std::shared_ptr<Database> connection_;

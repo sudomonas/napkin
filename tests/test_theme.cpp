@@ -586,19 +586,52 @@ private slots:
     }
 
 
-    void theToolbarUsesTheBundledLucideIcons()
+    void theSelectedBorderIsActuallyVisible()
     {
-        if (!QImageReader::supportedImageFormats().contains("svg"))
-            QSKIP("no SVG image plugin here; the drawn fallbacks are used instead");
-        for (const char* name : {"plus", "menu", "search", "trash-2", "settings"}) {
-            QImageReader reader(QStringLiteral(":/resources/icons/lucide/%1.svg").arg(QLatin1String(name)));
-            QVERIFY2(!reader.read().isNull(), name);
-        }
+        // The raw Highlight at alpha 160 measured 1.74:1 in Breeze Light —
+        // fainter than the 3.10:1 resting border it replaced.
+        QPalette pal;
+        pal.setColor(QPalette::Base, QColor(252, 252, 252));
+        pal.setColor(QPalette::Window, QColor(239, 240, 241));
+        pal.setColor(QPalette::Highlight, QColor(61, 174, 233));
+
+        const QColor accent = tokens::readableAccent(pal, 1.0);
+        const qreal ratio = contrast(accent, pal.color(QPalette::Base));
+        QVERIFY2(ratio >= 3.0, qPrintable(QString("selected border is %1:1").arg(ratio)));
+    }
+
+    void aThemeChangeRepaintsTheCards()
+    {
         GuiFixture f;
-        for (const char* button : {"newButton", "overflowButton", "settingsButton"}) {
-            auto* b = f.window.findChild<QAbstractButton*>(QString::fromLatin1(button));
-            QVERIFY2(b && !b->icon().isNull(), button);
-        }
+        const auto id = f.buffers.create();
+        const auto stored = f.blobs.store([]{
+            QImage i(20, 20, QImage::Format_RGB32); i.fill(Qt::blue);
+            QByteArray b; QBuffer buf(&b); buf.open(QIODevice::WriteOnly);
+            i.save(&buf, "PNG"); return b; }());
+        f.service.appendTo(id, Item::makeImage(stored.hash, 20, 20, stored.byteSize,
+                                               {}, stored.mime));
+        f.model()->reload();
+        f.select(id);
+
+        auto* card = f.canvas()->findChildren<ImageItemCard*>().first();
+        auto* view = card->findChildren<QLabel*>().first();
+        auto edgePixel = [view] {
+            const QImage img = view->pixmap().toImage();
+            return img.isNull() ? QColor() : img.pixelColor(img.width() / 2, 0);
+        };
+        QTRY_VERIFY(edgePixel().isValid());
+        const QColor before = edgePixel();
+
+        QPalette dark;
+        dark.setColor(QPalette::Base, QColor(27, 30, 32));
+        dark.setColor(QPalette::Window, QColor(35, 38, 41));
+        dark.setColor(QPalette::Text, QColor(252, 252, 252));
+        card->setPalette(dark);
+
+        // Colours captured at construction went stale on a theme change: card
+        // text stayed the old colour until the buffer was reopened.
+        QVERIFY2(edgePixel() != before,
+                 qPrintable(QStringLiteral("edge stayed %1").arg(before.name())));
     }
 
     void theSettingsButtonOpensSettings()
@@ -615,6 +648,20 @@ private slots:
         QVERIFY(opened);
     }
 
+    void theToolbarUsesTheBundledLucideIcons()
+    {
+        if (!QImageReader::supportedImageFormats().contains("svg"))
+            QSKIP("no SVG image plugin here; the drawn fallbacks are used instead");
+        for (const char* name : {"plus", "menu", "search", "trash-2", "settings"}) {
+            QImageReader reader(QStringLiteral(":/resources/icons/lucide/%1.svg").arg(QLatin1String(name)));
+            QVERIFY2(!reader.read().isNull(), name);
+        }
+        GuiFixture f;
+        for (const char* button : {"newButton", "overflowButton", "settingsButton"}) {
+            auto* b = f.window.findChild<QAbstractButton*>(QString::fromLatin1(button));
+            QVERIFY2(b && !b->icon().isNull(), button);
+        }
+    }
 };
 
 QTEST_MAIN(TestTheme)
