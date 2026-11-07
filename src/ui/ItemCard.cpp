@@ -442,15 +442,17 @@ void ItemCard::leaveEvent(QEvent* e)
 
 // --- text --------------------------------------------------------------------
 
-TextItemCard::TextItemCard(const Item& item, QWidget* parent) : ItemCard(item, parent)
+TextItemCard::TextItemCard(const Item& item, QWidget* parent, int previewChars)
+    : ItemCard(item, parent), previewChars_(previewChars > 0 ? previewChars : kMeasureLimit)
 {
     auto* edit = new PasteAwareTextEdit;
     // Only what a card can show, until someone edits it. setPlainText is
     // linear in the text — 135 ms for a 1.2 MB log — and a card is clipped at
-    // kCardMaxHeight, which kMeasureLimit characters overflow at any column
+    // the board's height cap, which previewChars_ characters overflow at any
+    // column width (BoardLayout::measureLimit()).
     // width. So a long note costs what a short one does until it is opened.
-    if (item.text.size() > kMeasureLimit) {
-        qsizetype cut = kMeasureLimit;
+    if (item.text.size() > previewChars_) {
+        qsizetype cut = previewChars_;
         if (item.text.at(cut - 1).isHighSurrogate()) --cut;   // never half a character
         whole_ = item.text;
         partial_ = true;
@@ -525,7 +527,7 @@ TextItemCard::TextItemCard(const Item& item, QWidget* parent) : ItemCard(item, p
     setContent(content, tr("Copy text"));
 
     lastText_ = text();
-    wasLong_ = text().size() > kMeasureLimit;
+    wasLong_ = text().size() > previewChars_;
     connect(edit_->document(), &QTextDocument::contentsChange, this,
             [this](int, int removed, int added) {
         // A card holding only the top of its note cannot have been edited: it
@@ -558,12 +560,12 @@ TextItemCard::TextItemCard(const Item& item, QWidget* parent) : ItemCard(item, p
         updateAccessibleName();
         refreshChip(hasEditFocus());
         emit edited();
-        // A note longer than kMeasureLimit is drawn at the maximum height
+        // A note longer than previewChars_ is drawn at the maximum height
         // whatever it says (BoardLayout::heightFor), so while it stays that
         // long there is nothing to re-measure, and re-measuring meant copying
         // the whole note out of the editor on every key. endEditing() always
         // re-measures, so the board's copy is current once editing stops.
-        const bool isLong = edit_->document()->characterCount() > kMeasureLimit + 1;
+        const bool isLong = edit_->document()->characterCount() > previewChars_ + 1;
         if (!(isLong && wasLong_)) emit heightChanged();
         wasLong_ = isLong;
     });
@@ -606,6 +608,21 @@ void TextItemCard::loadWholeText()
     edit_->setPlainText(whole_);
     partial_ = false;
     whole_.clear();
+}
+
+void TextItemCard::setPreviewChars(int chars)
+{
+    if (chars <= 0 || chars == previewChars_) return;
+    previewChars_ = chars;
+    if (!partial_) return;
+    const qsizetype loaded = edit_->document()->characterCount() - 1;
+    if (loaded >= previewChars_) return;   // already holds enough; the board clips the rest
+    if (whole_.size() <= previewChars_) { loadWholeText(); return; }
+    qsizetype cut = previewChars_;
+    if (whole_.at(cut - 1).isHighSurrogate()) --cut;   // never half a character
+    // Still partial, so the contentsChange handler ignores this: not an edit.
+    edit_->setPlainText(whole_.left(cut));
+    edit_->moveCursor(QTextCursor::Start);
 }
 
 void TextItemCard::setSearchTerms(const QStringList& terms)

@@ -113,6 +113,7 @@ namespace {
 // a browser's zoom is.
 constexpr auto kBoardZoomKey    = "view/boardZoomPercent";
 constexpr auto kBoardColumnsKey = "view/boardColumns";
+constexpr auto kSpotlightKey    = "view/spotlight";
 
 // Above this many characters a timed autosave is written on the worker. A
 // 256 KB note saves in about 3 ms; it is the multi-megabyte ones that froze.
@@ -404,6 +405,7 @@ void MainWindow::buildUi()
         canvas_->setZoom(settings.value(kBoardZoomKey, 100).toInt() / 100.0);   // clamps
         const int columns = settings.value(kBoardColumnsKey, 0).toInt();
         canvas_->setColumnCap(columns >= 2 && columns <= 4 ? columns : 0);
+        canvas_->setSpotlight(settings.value(kSpotlightKey, false).toBool());
     }
     connect(canvas_, &ItemCanvas::imagePasted, this,
             [this](const QByteArray& bytes, const QString& mime) {
@@ -756,6 +758,16 @@ void MainWindow::buildAppMenu()
     connect(cleanUp, &QAction::triggered, this, &MainWindow::reviewSweep);
 
     menu->addSection(tr("View"));
+    // Checkable, unlike Show trash: nothing else on screen names the mode, so
+    // the check mark is the only place that says which view you are in.
+    auto* spotlight = menu->addAction(tr("Spotlight"));
+    spotlight->setObjectName(QStringLiteral("spotlightAction"));
+    spotlight->setCheckable(true);
+    spotlight->setShortcut(QKeySequence(QStringLiteral("Ctrl+.")));
+    spotlight->setToolTip(tr("One card at a time, large and centred. Arrow keys or the wheel move "
+                             "through the napkin."));
+    addAction(spotlight);
+    connect(spotlight, &QAction::triggered, this, [this](bool on) { setSpotlight(on); });
     // Ctrl+= as well as the platform's Ctrl++: on most layouts "+" needs Shift,
     // and the key people actually press for "bigger" is the one marked "=".
     auto* zoomIn = menu->addAction(tr("Zoom in"));
@@ -776,6 +788,7 @@ void MainWindow::buildAppMenu()
     connect(zoomReset, &QAction::triggered, this, [this] { setBoardZoom(1.0); });
 
     auto* columnsMenu = menu->addMenu(tr("Board columns"));
+    columnsMenu_ = columnsMenu;
     columnsMenu->setObjectName(QStringLiteral("boardColumnsMenu"));
     columnsMenu->setToolTip(tr("Fewer columns make each card wider. Useful on a large monitor."));
     auto* columnChoices = new QActionGroup(columnsMenu);
@@ -792,7 +805,9 @@ void MainWindow::buildAppMenu()
     }
     // Read when shown, so what the menu says is what the board does, and the
     // zoom level is visible somewhere other than a toast that has gone.
-    connect(menu, &QMenu::aboutToShow, this, [this, columnChoices, zoomReset] {
+    connect(menu, &QMenu::aboutToShow, this, [this, columnChoices, zoomReset, spotlight] {
+        spotlight->setChecked(canvas_->spotlight());
+        columnsMenu_->setEnabled(!canvas_->spotlight());   // one column there
         for (QAction* a : columnChoices->actions())
             a->setChecked(a->data().toInt() == canvas_->columnCap());
         zoomReset->setText(tr("Actual size (now %1%)").arg(qRound(canvas_->zoom() * 100)));
@@ -916,6 +931,13 @@ void MainWindow::stepBoardZoom(int steps)
 {
     // On the 10% grid, whatever was stored: 1.0 + 0.1 * n accumulates error.
     setBoardZoom((qRound(canvas_->zoom() * 10) + steps) / 10.0);
+}
+
+void MainWindow::setSpotlight(bool on)
+{
+    canvas_->setSpotlight(on);
+    QSettings().setValue(kSpotlightKey, on);
+    if (auto* a = findChild<QAction*>(QStringLiteral("spotlightAction"))) a->setChecked(on);
 }
 
 void MainWindow::setBoardColumns(int columns)
@@ -1069,6 +1091,8 @@ void MainWindow::showShortcuts()
            "<tr><td><b>Ctrl+=</b> / <b>Ctrl+−</b></td><td>Zoom the board in or out "
            "(or Ctrl+wheel)</td></tr>"
            "<tr><td><b>Ctrl+0</b></td><td>Board at actual size</td></tr>"
+           "<tr><td><b>Ctrl+.</b></td><td>Spotlight: one card at a time, large; "
+           "arrows or the wheel move through them</td></tr>"
            "<tr><td colspan='2'>&nbsp;</td></tr>"
            "<tr><td colspan='2'><i>With the list focused:</i></td></tr>"
            "<tr><td><b>Typing</b></td><td>Write on the selected napkin</td></tr>"

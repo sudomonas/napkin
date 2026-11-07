@@ -125,7 +125,10 @@ private:
 class TextItemCard : public ItemCard {
     Q_OBJECT
 public:
-    explicit TextItemCard(const Item& item, QWidget* parent = nullptr);
+    // `previewChars`: how much of a long note to load until it is edited — the
+    // board's BoardLayout::measureLimit(), which grows for Spotlight's taller
+    // cards. 0 means tokens::kMeasureLimit, the ordinary board's.
+    explicit TextItemCard(const Item& item, QWidget* parent = nullptr, int previewChars = 0);
 
     // Always the whole note, even when the editor holds only its top.
     QString text() const;
@@ -155,6 +158,10 @@ public:
     void beginEditing(bool moveToEnd = true);
     void selectAllText();
     void insertText(const QString& text);
+    // The layout's preview length changed without the card being rebuilt — a
+    // resize in Spotlight makes cards taller. A partial card extends to it in
+    // place; one that already holds enough keeps what it has.
+    void setPreviewChars(int chars);
     void focusTextInteraction();
     void endEditing();
     bool textHasFocus() const;
@@ -209,7 +216,8 @@ private:
     class MatchHighlighter* highlighter_ = nullptr;
     bool dirty_ = false;
     QString lastText_;   // to tell a real edit from a reformat; see the constructor
-    bool    wasLong_ = false;   // over kMeasureLimit at the last edit
+    bool    wasLong_ = false;   // over previewChars_ at the last edit
+    int     previewChars_ = 0;   // see the constructor
     quint64 generation_ = 0;
 
     // A long note's editor holds only its top until it is edited; whole_ is

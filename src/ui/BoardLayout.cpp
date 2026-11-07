@@ -40,9 +40,35 @@ void BoardLayout::setScale(qreal scale)
 
 void BoardLayout::setColumnCap(int columns) { columnCap_ = std::max(0, columns); }
 
+void BoardLayout::setSpotlight(bool on, int width, int maxHeight, int edgePad)
+{
+    // The height cap is not in the measurement key, so a change of it is a
+    // change of every answer.
+    if (on != spotlight_ || maxHeight != spotMaxHeight_) cache_.clear();
+    spotlight_ = on;
+    spotWidth_ = width;
+    spotMaxHeight_ = maxHeight;
+    spotPad_ = edgePad;
+}
+
+int BoardLayout::measureLimit() const
+{
+    // kMeasureLimit is what overflows kCardMaxHeight at the widest board column
+    // (kCardCappedMaxWidth) at 100%. Characters per card go with its area over
+    // the glyph area; scale enlarges both alike, so only the ratios of the
+    // dimensions to their 100% values matter.
+    const qreal widest = spotlight_ ? std::max(spotWidth_, columnWidth_) : scaled(kCardCappedMaxWidth);
+    const qreal w = widest / (kCardCappedMaxWidth * scale_);
+    const qreal h = maxCardHeight() / (kCardMaxHeight * scale_);
+    return std::max(kMeasureLimit, int(std::ceil(kMeasureLimit * std::max(1.0, w) * std::max(1.0, h))));
+}
+
 int BoardLayout::scaled(int px) const { return int(std::lround(px * scale_)); }
 int BoardLayout::gap() const { return scaled(kCardGap); }
-int BoardLayout::maxCardHeight() const { return scaled(kCardMaxHeight); }
+int BoardLayout::maxCardHeight() const
+{
+    return spotlight_ ? std::max(spotMaxHeight_, scaled(kCardMaxHeight)) : scaled(kCardMaxHeight);
+}
 
 void BoardLayout::setFont(const QFont& body)
 {
@@ -88,10 +114,11 @@ int BoardLayout::heightFor(const Item& item, int columnWidth, bool* clipped) con
         // kCardMaxHeight, and this many characters overflows that at any column
         // width we allow — so laying out the rest of a pasted log would be work
         // whose result is already known.
-        doc.setPlainText(item.text.left(kMeasureLimit));
+        const int limit = measureLimit();
+        doc.setPlainText(item.text.left(limit));
         doc.setTextWidth(inner);
         content = int(std::ceil(doc.size().height())) + 2;
-        if (item.text.size() > kMeasureLimit) content = maxCardHeight();   // certainly over
+        if (item.text.size() > limit) content = maxCardHeight() + 1;   // certainly over
     } else {
         // From the stored dimensions: no file is opened and no image decoded
         // just to find out how tall a card is.
@@ -137,7 +164,13 @@ void BoardLayout::reset(const std::vector<Item>& items)
     const int g        = gap();
     const int usable = std::max(minWidth, viewportWidth_ - kPadX * 2);
     int columns = std::max(1, (usable + g) / (target + g));
-    if (columnCap_ > 0 && columns > columnCap_) {
+    top_ = kPadTop;
+    if (spotlight_) {
+        // One column, as wide as a comfortable line, in the middle.
+        columns = 1;
+        columnWidth_ = std::clamp(spotWidth_, std::min(minWidth, usable), usable);
+        top_ = std::max(kPadTop, spotPad_);
+    } else if (columnCap_ > 0 && columns > columnCap_) {
         // Fewer columns than fit: the width they would have had goes to the
         // cards — up to a measure that still reads as a card rather than a page.
         columns = columnCap_;
@@ -154,10 +187,10 @@ void BoardLayout::reset(const std::vector<Item>& items)
     // A capped board is centred in what its columns leave over. An uncapped one
     // keeps to the left, as it always has: its leftover is under one column.
     const int spare = usable - (columns * columnWidth_ + (columns - 1) * g);
-    left_ = kPadX + (columnCap_ > 0 ? std::max(0, spare / 2) : 0);
+    left_ = kPadX + (columnCap_ > 0 || spotlight_ ? std::max(0, spare / 2) : 0);
 
     columns_ = columns;
-    bottoms_.assign(size_t(columns), kPadTop);
+    bottoms_.assign(size_t(columns), top_);
     itemCount_ = items.size();
     placedHeight_ = 0;
     placements_.reserve(items.size());
@@ -180,7 +213,7 @@ void BoardLayout::placeNext(const Item& item)
 
 void BoardLayout::updateTotalHeight()
 {
-    int deepest = kPadTop;
+    int deepest = top_;
     for (int b : bottoms_) deepest = std::max(deepest, b);
     if (!complete() && !placements_.empty()) {
         // The rest, at the average height of what has been measured, shared
@@ -192,7 +225,7 @@ void BoardLayout::updateTotalHeight()
         deepest = std::max<qint64>(deepest,
                                    shallowest + remaining * average / std::max(1, columns_));
     }
-    totalHeight_ = deepest + kPadTop - gap();
+    totalHeight_ = deepest + top_ - gap();
 }
 
 bool BoardLayout::placeThrough(const std::vector<Item>& items, int y)

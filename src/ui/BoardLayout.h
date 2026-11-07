@@ -39,6 +39,18 @@ public:
     // columns in whatever is still left over.
     void setColumnCap(int columns);
     int columnCap() const { return columnCap_; }
+
+    // Spotlight: one centred column `width` wide, cards up to `maxHeight` tall,
+    // and `edgePad` above the first card and below the last, so that either can
+    // be scrolled to the middle of the view. Off is the ordinary board.
+    void setSpotlight(bool on, int width = 0, int maxHeight = 0, int edgePad = 0);
+    bool spotlight() const { return spotlight_; }
+
+    // How much of a long note's text can still change a card's height here:
+    // enough characters to overflow the tallest card at the widest column, at
+    // this scale. The card loads no more than this until it is edited, and the
+    // board measures no more — so both have to ask the layout, not a constant.
+    int measureLimit() const;
     // The whole board, now.
     void rebuild(const std::vector<Item>& items);
 
@@ -121,8 +133,13 @@ private:
     int columnWidth_ = 0;
     int totalHeight_ = 0;
     int left_ = 0;
+    int top_ = 0;          // above the first card; also below the last
     qreal scale_ = 1.0;
     int columnCap_ = 0;
+    bool spotlight_ = false;
+    int spotWidth_ = 0;
+    int spotMaxHeight_ = 0;
+    int spotPad_ = 0;
     QFont* body_ = nullptr;
 };
 

@@ -1521,8 +1521,63 @@ zig-zags across all of them.
   hint is made of (measured across 7–24 pt). The chip at 100% had fit by luck
   of rounding.
 
-Not done here: Spotlight, a single centred reading column with dimmed
-neighbours, is the second half of this work.
+**Spotlight** (View ▸ Spotlight, Ctrl+., saved as `view/spotlight`) is the
+other half. Zoom makes cards bigger; Spotlight fixes the reading order. It shows
+one card at a time, large and centred, with the others dimmed above and below.
+
+- It **is** the board, laid out as one column (`BoardLayout::setSpotlight`).
+  Editing, selection, copy, delete, search, the trash and virtualization are
+  therefore unchanged and need no second implementation.
+- The column is sized as a line of text, about 72 characters
+  (`kSpotlightMeasureChars`), so it follows font and zoom. The type is a step up
+  (`kSpotlightType` = 1.25×) on top of the zoom. A card may be nearly as tall as
+  the view (`kSpotlightMargin` either side). Padding above the first card and
+  below the last lets either be brought to the middle.
+- **The current card is the one in the middle of the view** (`spotlitIndex()`).
+  A shade that lets the mouse through dims the rest (`kSpotlightDim`), so a
+  dimmed neighbour can still be clicked, which brings it to the middle. ↑/↓
+  glide the next card to the middle in 180 ms; ←/→ step too, as in a carousel.
+  The wheel scrolls freely and the dimming follows. After a wheel scroll the
+  keys pick up from the middle card, not from where the keyboard last left the
+  cursor.
+- A **rail** of ticks beside the column, one per card and as tall as the card
+  (scaled to fit), with a "3 / 12" counter. Clicking a tick jumps there.
+- **Long notes:** a card loads only the start of a long note until it is edited,
+  and the board measures no further. That length was the constant
+  `kMeasureLimit`, sized for the board's 420 px cards. Spotlight's cards are far
+  taller, so the length is now `BoardLayout::measureLimit()`, scaled to the
+  largest card the current layout allows, and each card is built with it. With
+  the old constant a long note stopped after 2048 characters in a card with room
+  for twice that.
+- Switching keeps your place both ways: the card that was current stays current.
+  Board columns is greyed out in Spotlight.
+- The view is global, not per napkin, because the reason for it (the monitor) is
+  global. Per-napkin memory would need a schema change for little gain.
+
+*Independent review, before commit.* Four faults, each reproduced, fixed, and
+pinned by a test that fails without its fix:
+
+1. A card selected by a click and then scrolled out of sight stayed selected,
+   so Delete trashed the hidden card and not the one in the middle. When the
+   keys pick up from the middle card, a selection that does not include it is
+   now dropped (`aSelectionScrolledAwayDoesNotTakeTheKeys`).
+2. A resize in Spotlight made cards taller without rebuilding them, so a long
+   note held its old 2048-character preview under a limit of 4674 and was drawn
+   half empty. Live cards now follow the layout's limit in place
+   (`TextItemCard::setPreviewChars`).
+3. A glide still running when another napkin opened scrolled the new napkin to
+   the old one's target. Clearing the board now stops it.
+4. With hundreds of cards the rail's ticks ran past its bottom: clicking the
+   bottom of a 1000-card rail reached card 152. Past what fits, the rail
+   becomes a proportional map.
+
+Also fixed from the same review, all reasoned rather than reproduced:
+- Keeping your place could match the unwritten composer, whose id is `kNoItem`.
+- Horizontal Ctrl+wheel was swallowed.
+
+Open: the rail sits at the window's right edge, beside the scroll bar. On a
+32-inch screen that is far from the column the eye is on. Moving it next to the
+column is a candidate once it has had real use.
 
 
 ### The three empty screens

@@ -13,6 +13,7 @@ class QContextMenuEvent;
 
 class QLabel;
 class QTimer;
+class QPropertyAnimation;
 
 
 namespace napkin {
@@ -160,6 +161,20 @@ public:
     // event (MainWindow's application filter), so it does not depend on the
     // event propagating up. Answers whether it took the event.
     bool takeZoomWheel(QObject* receiver, QWheelEvent* e);
+    // --- Spotlight -----------------------------------------------------------
+    // One card at a time: a single centred column at reading size, the card in
+    // the middle of the view current and the rest dimmed, a rail of ticks
+    // beside it. Everything else — editing, selection, copy, the keyboard — is
+    // the board's own, because it IS the board, laid out as one column.
+    void setSpotlight(bool on);
+    bool spotlight() const { return board_.spotlight(); }
+    // The card in the middle of the view, which Spotlight treats as current;
+    // -1 on the ordinary board.
+    int  spotlitIndex() const { return spotlit_; }
+    // Scrolls so the card at `index` sits in the middle of the view (its top,
+    // if it is taller than the view). Glides when the window is showing.
+    void bringToCentre(int index, bool animate = true);
+
     // The application's text size changed. A zoomed board carries a size of its
     // own, so inheritance does not reach it — and the canvas is not told
     // directly: QApplication::setFont sends ApplicationFontChange only to
@@ -222,8 +237,19 @@ private:
     // The application's font at zoom_, or the plain inherited font at 100% so
     // an unzoomed board behaves exactly as it did before zoom existed.
     void applyZoomFont();
+    // The zoom times Spotlight's step up in type, which is what the font and
+    // every layout dimension are scaled by.
+    qreal effectiveScale() const;
     qreal zoom_ = 1.0;
     int   wheelAccum_ = 0;
+
+    void updateSpotlit();          // the card nearest the middle of the view
+    void placeSpotlightChrome();   // the shade over the body, the rail beside it
+    bool gliding() const;
+    QWidget* shade_ = nullptr;     // dims every card but the current one
+    QWidget* rail_ = nullptr;      // one tick per card; click to jump
+    QPropertyAnimation* glide_ = nullptr;
+    int spotlit_ = -1;
     void wireCard(ItemCard* card);
     void acknowledgeCopy(const QList<ItemId>& ids);
     // The card for a BOARD index, or null when that item is outside the

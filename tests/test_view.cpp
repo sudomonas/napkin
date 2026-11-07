@@ -141,6 +141,11 @@ private slots:
         QApplication::sendEvent(editor->viewport(), &wheel);
 
         QCOMPARE(f.canvas()->zoom(), 1.1);
+        // Sideways is not a zoom, and is left for whoever wants it.
+        QWheelEvent sideways(at, editor->viewport()->mapToGlobal(at), QPoint(), QPoint(120, 0),
+                             Qt::NoButton, Qt::ControlModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(firstText(f)->findChild<QPlainTextEdit*>()->viewport(), &sideways);
+        QCOMPARE(f.canvas()->zoom(), 1.1);
         // The card was rebuilt at the board's new size, not zoomed on its own.
         auto* rebuilt = firstText(f);
         QVERIFY(rebuilt);
@@ -250,6 +255,296 @@ private slots:
                 QVERIFY2(label->height() >= label->sizeHint().height(),
                          qPrintable(QStringLiteral("\"%1\" %2px of %3px").arg(label->text())
                                         .arg(label->height()).arg(label->sizeHint().height())));
+    }
+
+    // --- Spotlight ------------------------------------------------------------
+    static int middleOfView(GuiFixture& f)
+    {
+        return f.canvas()->verticalScrollBar()->value() + f.canvas()->viewport()->height() / 2;
+    }
+    static QWidget* rail(GuiFixture& f)
+    {
+        for (auto* w : f.canvas()->findChildren<QWidget*>(Qt::FindDirectChildrenOnly))
+            if (w->accessibleName() == QStringLiteral("Cards on this napkin")) return w;
+        return nullptr;
+    }
+
+    // One column, centred, at a step up in type; the shade and the rail up.
+    void spotlightIsOneCentredColumnAtReadingSize()
+    {
+        GuiFixture f;
+        seedNotes(f, 12);
+        widen(f);
+        const qreal boardPoints = firstText(f)->font().pointSizeF();
+        f.window.setSpotlight(true);
+        const auto& board = f.canvas()->boardForTest();
+        QCOMPARE(board.columnCount(), 1);
+        QVERIFY(board.spotlight());
+        QCOMPARE(firstText(f)->font().pointSizeF(), boardPoints * tokens::kSpotlightType);
+        // Centred within the width the board has.
+        const int usable = f.canvas()->viewport()->width() - 2 * tokens::kPadX;
+        const int leftSpace = board.left() - tokens::kPadX;
+        const int rightSpace = usable - leftSpace - board.columnWidth();
+        QVERIFY2(std::abs(leftSpace - rightSpace) <= f.canvas()->verticalScrollBar()->sizeHint().width() + 2,
+                 qPrintable(QStringLiteral("left %1 right %2").arg(leftSpace).arg(rightSpace)));
+        // A comfortable line, not the whole screen.
+        QVERIFY(board.columnWidth() < f.canvas()->viewport()->width() / 2);
+        QVERIFY(rail(f) && !rail(f)->isHidden());
+        QVERIFY(f.canvas()->spotlitIndex() >= 0);
+        // The shade lies over the cards: it is the topmost child of the body.
+        auto* body = f.canvas()->widget();
+        QWidget* top = nullptr;
+        for (QObject* o : body->children())
+            if (auto* w = qobject_cast<QWidget*>(o); w && !w->isHidden()) top = w;
+        QVERIFY(top && !qobject_cast<ItemCard*>(top));
+        QVERIFY(top->testAttribute(Qt::WA_TransparentForMouseEvents));
+
+        f.window.setSpotlight(false);
+        QVERIFY(board.columnCount() > 1);
+        QCOMPARE(f.canvas()->spotlitIndex(), -1);
+        QVERIFY(rail(f)->isHidden());
+        QCOMPARE(firstText(f)->font().pointSizeF(), boardPoints);
+    }
+
+    // The arrows glide the next card to the middle of the view.
+    void theArrowsBringTheNextCardToTheMiddle()
+    {
+        GuiFixture f;
+        seedNotes(f, 12);
+        f.window.setSpotlight(true);
+        f.canvas()->setFocus(Qt::OtherFocusReason);
+        for (int i = 0; i < 3; ++i) QTest::keyClick(f.canvas(), Qt::Key_Down);
+        QTRY_COMPARE(f.canvas()->spotlitIndex(), 3);
+        const QRect r = f.canvas()->boardForTest().placements()[3].rect;
+        QTRY_VERIFY(std::abs(r.center().y() - middleOfView(f)) <= 2);
+        // Left and Right step through the one column as well.
+        QTest::keyClick(f.canvas(), Qt::Key_Left);
+        QTRY_COMPARE(f.canvas()->spotlitIndex(), 2);
+        QTest::keyClick(f.canvas(), Qt::Key_Right);
+        QTRY_COMPARE(f.canvas()->spotlitIndex(), 3);
+    }
+
+    // A dimmed neighbour can be clicked through the shade, and comes to the middle.
+    void clickingADimmedCardBringsItToTheMiddle()
+    {
+        GuiFixture f;
+        seedNotes(f, 6);
+        f.window.setSpotlight(true);
+        QCOMPARE(f.canvas()->spotlitIndex(), 0);
+        ItemCard* second = nullptr;
+        for (auto* c : f.canvas()->findChildren<ItemCard*>())
+            if (f.canvas()->indexOf(c->itemId()) == 1) second = c;
+        QVERIFY(second);
+        QTest::mouseClick(second, Qt::LeftButton, Qt::NoModifier, QPoint(second->width() - 30, 8));
+        QTRY_COMPARE(f.canvas()->spotlitIndex(), 1);
+        QCOMPARE(f.canvas()->selection(), QList<ItemId>{second->itemId()});
+    }
+
+    // Scrolled with the wheel, the keys act on the card in the middle — not on
+    // wherever the keyboard last left the cursor.
+    void afterScrollingTheKeysActOnTheMiddleCard()
+    {
+        GuiFixture f;
+        const auto id = seedNotes(f, 12);
+        f.window.setSpotlight(true);
+        const auto& placed = f.canvas()->boardForTest().placements();
+        QVERIFY(placed.size() == 12);
+        // As the wheel would: straight to the scroll bar.
+        f.canvas()->verticalScrollBar()->setValue(placed[6].rect.center().y()
+                                                  - f.canvas()->viewport()->height() / 2);
+        QCOMPARE(f.canvas()->spotlitIndex(), 6);
+        const ItemId middle = placed[6].id;
+        f.canvas()->setFocus(Qt::OtherFocusReason);
+        QTest::keyClick(f.canvas(), Qt::Key_Delete);
+        QTRY_COMPARE(f.items.countForBuffer(id), 11);
+        QVERIFY(!f.items.find(middle) || f.items.find(middle)->bufferId != id);
+    }
+
+    // Independent review: a card selected by a click and then scrolled out of
+    // sight stayed selected, and Delete trashed it instead of the card in the
+    // middle.
+    void aSelectionScrolledAwayDoesNotTakeTheKeys()
+    {
+        GuiFixture f;
+        const auto id = seedNotes(f, 12);
+        f.window.setSpotlight(true);
+        ItemCard* second = nullptr;
+        for (auto* c : f.canvas()->findChildren<ItemCard*>())
+            if (f.canvas()->indexOf(c->itemId()) == 1) second = c;
+        QVERIFY(second);
+        const ItemId clicked = second->itemId();
+        QTest::mouseClick(second, Qt::LeftButton, Qt::NoModifier, QPoint(second->width() - 30, 8));
+        QTRY_COMPARE(f.canvas()->spotlitIndex(), 1);
+        QTRY_VERIFY(f.canvas()->verticalScrollBar()->value() > 0 || f.canvas()->spotlitIndex() == 1);
+        QTest::qWait(250);   // let the glide finish
+        const auto& placed = f.canvas()->boardForTest().placements();
+        f.canvas()->verticalScrollBar()->setValue(placed[6].rect.center().y() - f.canvas()->viewport()->height() / 2);
+        QCOMPARE(f.canvas()->spotlitIndex(), 6);
+        const ItemId middle = placed[6].id;
+        f.canvas()->setFocus(Qt::OtherFocusReason);
+        QTest::keyClick(f.canvas(), Qt::Key_Delete);
+        QTRY_COMPARE(f.items.countForBuffer(id), 11);
+        QVERIFY2(f.items.find(clicked) && f.items.find(clicked)->bufferId == id, "the hidden card was deleted");
+        QVERIFY(!f.items.find(middle) || f.items.find(middle)->bufferId != id);
+    }
+
+    // Independent review: a resize in Spotlight made cards taller without
+    // rebuilding them, so a long note's card held the old, shorter preview and
+    // was drawn half empty under the clip fade.
+    void aResizeInSpotlightExtendsALongNotesPreview()
+    {
+        GuiFixture f;
+        QString paragraph;
+        while (paragraph.size() < 14000) paragraph += QStringLiteral("one long paragraph of pasted words ");
+        seedNotes(f, 1, paragraph);
+        f.window.resize(1400, 600);
+        QCoreApplication::processEvents();
+        f.window.setSpotlight(true);
+        f.window.resize(1400, 1400);
+        QTRY_VERIFY(f.canvas()->viewport()->height() > 1000);
+        QCoreApplication::processEvents();
+        const int limit = f.canvas()->boardForTest().measureLimit();
+        auto* editor = firstText(f)->findChild<QPlainTextEdit*>();
+        QVERIFY2(editor->document()->characterCount() - 1 >= std::min<qsizetype>(limit, paragraph.size()) - 1,
+                 qPrintable(QStringLiteral("loaded %1, limit %2").arg(editor->document()->characterCount()).arg(limit)));
+        QCOMPARE(firstText(f)->text(), paragraph);   // and the whole note is still the note
+    }
+
+    // Independent review: a glide still running when another napkin opened
+    // scrolled the new napkin to the old one's target.
+    void aGlideDoesNotFollowYouToAnotherNapkin()
+    {
+        GuiFixture f;
+        const auto first = seedNotes(f, 40);
+        const auto second = f.buffers.create();
+        for (int i = 0; i < 40; ++i) f.service.appendTo(second, Item::makeText(QStringLiteral("other %1").arg(i)));
+        f.model()->reload();
+        f.select(first);
+        f.window.setSpotlight(true);
+        f.canvas()->setCursorTo(30, Qt::NoModifier);   // starts a glide
+        f.select(second);                               // before it can finish
+        QTest::qWait(300);
+        QVERIFY2(f.canvas()->spotlitIndex() <= 1,
+                 qPrintable(QStringLiteral("spotlit %1 on the new napkin").arg(f.canvas()->spotlitIndex())));
+    }
+
+    // Independent review: with a thousand cards the ticks ran far past the
+    // bottom of the rail, so most cards could not be reached from it.
+    void theRailReachesEveryCardOnABigNapkin()
+    {
+        GuiFixture f;
+        seedNotes(f, 400);
+        f.window.setSpotlight(true);
+        auto* strip = rail(f);
+        QVERIFY(strip);
+        QTest::mouseClick(strip, Qt::LeftButton, Qt::NoModifier, QPoint(strip->width() / 2, strip->height() - 9));
+        QTRY_VERIFY2(f.canvas()->spotlitIndex() >= 395,
+                     qPrintable(QStringLiteral("spotlit %1").arg(f.canvas()->spotlitIndex())));
+        QTest::mouseClick(strip, Qt::LeftButton, Qt::NoModifier, QPoint(strip->width() / 2, strip->height() / 2));
+        QTRY_VERIFY2(std::abs(f.canvas()->spotlitIndex() - 200) < 20,
+                     qPrintable(QStringLiteral("middle of the rail -> %1").arg(f.canvas()->spotlitIndex())));
+    }
+
+    // The rail jumps to the tick you click.
+    void theRailJumpsToACard()
+    {
+        GuiFixture f;
+        seedNotes(f, 12);
+        f.window.setSpotlight(true);
+        auto* strip = rail(f);
+        QVERIFY(strip);
+        QTest::mouseClick(strip, Qt::LeftButton, Qt::NoModifier, QPoint(strip->width() / 2, strip->height() - 2));
+        QTRY_COMPARE(f.canvas()->spotlitIndex(), 11);   // the nearest tick to the bottom is the last
+    }
+
+    // A long note shows more of itself in Spotlight's taller card than the
+    // board's preview holds — the card loads what the layout says it can show.
+    void aLongNoteShowsMoreInSpotlight()
+    {
+        GuiFixture f;
+        QString longText;
+        for (int i = 0; i < 300; ++i) longText += QStringLiteral("line %1 of a long pasted log\n").arg(i);
+        QVERIFY(longText.size() > tokens::kMeasureLimit * 2);
+        seedNotes(f, 1, longText);
+        widen(f);
+        auto loaded = [&] { return firstText(f)->findChild<QPlainTextEdit*>()->document()->characterCount(); };
+        const int boardLoaded = loaded();
+        QVERIFY(boardLoaded <= tokens::kMeasureLimit + 1);
+        const int boardHeight = firstText(f)->height();
+
+        f.window.setSpotlight(true);
+        const auto& board = f.canvas()->boardForTest();
+        QVERIFY(board.measureLimit() > tokens::kMeasureLimit);
+        QVERIFY2(loaded() > boardLoaded, qPrintable(QStringLiteral("%1 vs %2").arg(loaded()).arg(boardLoaded)));
+        QVERIFY(firstText(f)->height() > boardHeight);
+        QVERIFY(firstText(f)->height() <= board.maxCardHeight());
+        // Still the whole note when edited, and nothing was lost on the way.
+        QCOMPARE(firstText(f)->text(), longText);
+    }
+
+    // The card that was current stays current across the switch, both ways.
+    void switchingKeepsYourPlace()
+    {
+        GuiFixture f;
+        seedNotes(f, 12);
+        widen(f);
+        f.canvas()->setCursorTo(7, Qt::NoModifier);
+        const ItemId seventh = f.canvas()->itemOrder().value(7);
+        f.window.setSpotlight(true);
+        QCOMPARE(f.canvas()->spotlitIndex(), 7);
+        f.canvas()->bringToCentre(9, false);
+        f.window.setSpotlight(false);
+        QCOMPARE(f.canvas()->cursorIndex(), 9);
+        const QRect r = f.canvas()->boardForTest().placements()[9].rect;
+        const QRect view(0, f.canvas()->verticalScrollBar()->value(),
+                         f.canvas()->viewport()->width(), f.canvas()->viewport()->height());
+        QVERIFY(view.intersects(r));
+        QVERIFY(seventh != kNoItem);
+    }
+
+    // Saved across launches; bound to Ctrl+. and checked in the menu.
+    void spotlightIsRememberedAndInTheMenu()
+    {
+        {
+            GuiFixture f;
+            auto* action = f.window.findChild<QAction*>(QStringLiteral("spotlightAction"));
+            QVERIFY(action && action->isCheckable());
+            QCOMPARE(action->shortcut(), QKeySequence(QStringLiteral("Ctrl+.")));
+            QVERIFY(f.window.actions().contains(action));
+            action->trigger();
+            QVERIFY(f.canvas()->spotlight());
+            QVERIFY(action->isChecked());
+        }
+        {
+            GuiFixture again;
+            QVERIFY(again.canvas()->spotlight());
+            again.window.setSpotlight(false);
+        }
+        GuiFixture third;
+        QVERIFY(!third.canvas()->spotlight());
+    }
+
+    // Enter edits the card in the middle, and what is typed is saved.
+    void enterEditsTheCentredCard()
+    {
+        GuiFixture f;
+        const auto id = seedNotes(f, 5);
+        f.window.setSpotlight(true);
+        f.canvas()->setFocus(Qt::OtherFocusReason);
+        QTest::keyClick(f.canvas(), Qt::Key_Down);
+        QTest::keyClick(f.canvas(), Qt::Key_Down);
+        QTRY_COMPARE(f.canvas()->spotlitIndex(), 2);
+        const ItemId target = f.canvas()->itemOrder().value(2);
+        QTest::keyClick(f.canvas(), Qt::Key_Return);
+        TextItemCard* editing = nullptr;
+        for (auto* c : f.canvas()->findChildren<TextItemCard*>())
+            if (c->hasEditFocus()) editing = c;
+        QVERIFY(editing);
+        QCOMPARE(editing->itemId(), target);
+        editing->insertText(QStringLiteral(" EDITED"));
+        QVERIFY(f.window.flushForTest(false));
+        QVERIFY(f.items.find(target)->text.endsWith(QStringLiteral(" EDITED")));
+        QCOMPARE(f.items.countForBuffer(id), 5);
     }
 
     // A long note clips at the scaled height, and on a whole line: the board

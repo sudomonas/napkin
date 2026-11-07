@@ -125,6 +125,8 @@ public:
     void stepBoardZoom(int steps);
     // At most this many board columns (View ▸ Board columns); 0 = as many as fit.
     void setBoardColumns(int columns);
+    // One card at a time, large and centred (View ▸ Spotlight), saved.
+    void setSpotlight(bool on);
 
 protected:
     void closeEvent(QCloseEvent* e) override;
@@ -235,6 +237,7 @@ private:
     QPushButton*     homeSegment_ = nullptr;   // the Home half of the Home / Trash switch
     QAction*         searchGlyph_ = nullptr;   // the magnifier inside the search field
     QMenu*           appMenu_ = nullptr;       // every action, behind the menu button
+    QMenu*           columnsMenu_ = nullptr;   // View ▸ Board columns
     QAction*         fullScreenAction_ = nullptr;
     bool             wasMaximized_ = false;    // what leaving full screen returns to
     enum class EmptyAction { GoHome, SearchTrash };

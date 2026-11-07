@@ -146,6 +146,23 @@ inline constexpr int kCardTargetWidth = 360;
 // note. kMeasureLimit still overflows kCardMaxHeight at this width.
 inline constexpr int kCardCappedMaxWidth = 640;
 
+// --- Spotlight (View ▸ Spotlight) ---------------------------------------------
+// One card at a time, large and centred, the others dimmed above and below.
+// The type is a step up from the board's, on top of the zoom: Spotlight is for
+// reading, and on a large monitor the board's 10.5pt is what made it hard.
+inline constexpr qreal kSpotlightType = 1.25;
+// The column is sized as a line of text, not in pixels, so it follows the font
+// and the zoom: about 72 characters, the upper end of a comfortable measure.
+inline constexpr int kSpotlightMeasureChars = 72;
+// Between the tallest card and the top and bottom of the view.
+inline constexpr int kSpotlightMargin = 48;
+// How much of the desk colour lies over the cards that are not current. Enough
+// to say "not this one" while staying legible: the next card is still worth
+// reading at a glance.
+inline constexpr int kSpotlightDim = 150;
+// The strip of ticks beside the column, one per card.
+inline constexpr int kSpotlightRailWidth = 44;
+
 // Enough for roughly 18 lines of body text or a landscape screenshot. Past this
 // a card would own the board, so it clips with a fade and opens on double-click.
 inline constexpr int kCardMaxHeight = 420;

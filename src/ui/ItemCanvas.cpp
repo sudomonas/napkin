@@ -20,11 +20,149 @@
 #include <QScrollBar>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <limits>
+#include <functional>
+#include <QPropertyAnimation>
+#include <QPainterPath>
+#include <QPainter>
 #include <QWheelEvent>
 
 namespace napkin {
 namespace {
 using namespace tokens;
+
+// Lies over the body in Spotlight and dims every card but the current one. It
+// paints and nothing else: the mouse goes straight through it to the cards, so
+// a dimmed card can still be clicked, and clicking it brings it to the middle.
+class SpotlightShade : public QWidget {
+public:
+    std::function<const std::vector<BoardLayout::Slot>&()> placements;
+    std::function<int()> current;
+
+    explicit SpotlightShade(QWidget* parent) : QWidget(parent)
+    {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_NoSystemBackground);
+        setFocusPolicy(Qt::NoFocus);
+    }
+
+protected:
+    void paintEvent(QPaintEvent* e) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QColor dim = palette().color(QPalette::Window);
+        dim.setAlpha(kSpotlightDim);
+        const auto& all = placements();
+        const int lit = current();
+        for (size_t i = 0; i < all.size(); ++i) {
+            if (int(i) == lit) continue;
+            // A pixel past the card, so its edge is dimmed with it.
+            const QRect r = all[i].rect.adjusted(-1, -1, 1, 1);
+            if (!r.intersects(e->rect())) continue;
+            QPainterPath path;
+            path.addRoundedRect(QRectF(r), kCardRadius + 1, kCardRadius + 1);
+            p.fillPath(path, dim);
+        }
+    }
+};
+
+// Beside the Spotlight column: where you are, and the shape of the napkin. One
+// tick per card, as tall as the card is (scaled to fit), the current one in the
+// accent; a click jumps there. The counter above says it in words.
+class SpotlightRail : public QWidget {
+public:
+    std::function<const std::vector<BoardLayout::Slot>&()> placements;
+    std::function<int()> current;
+    std::function<int()> count;
+    std::function<void(int)> jump;
+
+    explicit SpotlightRail(QWidget* parent) : QWidget(parent)
+    {
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::NoFocus);   // the arrows already do this from the board
+        setAccessibleName(QObject::tr("Cards on this napkin"));
+    }
+
+    // The ticks' rectangles, in order. Shared by painting and clicking so the
+    // two cannot disagree about which tick is where.
+    std::vector<QRect> ticks() const
+    {
+        std::vector<QRect> out;
+        const auto& all = placements();
+        if (all.empty()) return out;
+        const int top = counterHeight() + 6;
+        const int room = std::max(1, height() - top - 8);
+        constexpr int gap = 3;
+        constexpr int minTick = 4;
+        // At an eighth of a card's height, until they would not fit; then the
+        // whole set shrinks to the rail, never below a tick you can hit.
+        // Too many cards for a tick each at a size you can hit (a thousand of
+        // them ran far past the bottom, so most were unreachable): a map
+        // instead, every card at its share of the rail by height, edge to edge.
+        if (qint64(all.size()) * (minTick + 1) > room) {
+            qint64 total = 0;
+            for (const auto& slot : all) total += std::max(1, slot.rect.height());
+            qint64 above = 0;
+            for (const auto& slot : all) {
+                const int y0 = top + int(room * above / total);
+                above += std::max(1, slot.rect.height());
+                const int y1 = top + int(room * above / total);
+                out.push_back(QRect(8, y0, width() - 16, std::max(1, y1 - y0)));
+            }
+            return out;
+        }
+        qint64 natural = 0;
+        for (const auto& slot : all) natural += std::clamp(slot.rect.height() / 8, 6, 60) + gap;
+        const qreal fit = natural > room ? qreal(room) / natural : 1.0;
+        int y = top;
+        for (const auto& slot : all) {
+            const int h = std::max(minTick, int(std::clamp(slot.rect.height() / 8, 6, 60) * fit));
+            out.push_back(QRect(8, y, width() - 16, h));
+            y += h + std::max(1, int(gap * fit));
+        }
+        return out;
+    }
+
+protected:
+    int counterHeight() const { return QFontMetrics(scaledBy(font(), kTypeCaption)).height() + 8; }
+
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QPalette pal = palette();
+        const int lit = current();
+        if (count() > 0) {
+            p.setFont(scaledBy(font(), kTypeCaption));
+            p.setPen(text(pal, kTextTertiary));
+            p.drawText(QRect(0, 4, width(), counterHeight()), Qt::AlignHCenter | Qt::AlignTop,
+                       QStringLiteral("%1 / %2").arg(lit >= 0 ? lit + 1 : 0).arg(count()));
+        }
+        const auto rects = ticks();
+        for (size_t i = 0; i < rects.size(); ++i)
+            if (int(i) != lit) p.fillRect(rects[i], text(pal, kImageEdge));
+        // Last, and never thinner than 4px, so in the dense map it still shows.
+        if (lit >= 0 && lit < int(rects.size())) {
+            QRect r = rects[size_t(lit)];
+            if (r.height() < 4) r.adjust(0, -(4 - r.height()) / 2, 0, (4 - r.height() + 1) / 2);
+            p.fillRect(r, highlight(pal, 255));
+        }
+    }
+
+    void mousePressEvent(QMouseEvent* e) override
+    {
+        const auto rects = ticks();
+        int best = -1, bestGap = std::numeric_limits<int>::max();
+        for (size_t i = 0; i < rects.size(); ++i) {
+            const int gap = std::abs(rects[i].center().y() - e->position().toPoint().y());
+            if (gap < bestGap) { best = int(i); bestGap = gap; }
+        }
+        if (best >= 0) jump(best);
+        e->accept();
+    }
+};
+
 }  // namespace
 
 ItemCanvas::ItemCanvas(Thumbnailer& thumbs, BlobStore& blobs, QWidget* parent)
@@ -68,6 +206,22 @@ ItemCanvas::ItemCanvas(Thumbnailer& thumbs, BlobStore& blobs, QWidget* parent)
     connect(verticalScrollBar(), &QScrollBar::valueChanged, this,
             [this] { syncVisibleCards(); });
 
+    auto* shade = new SpotlightShade(body_);
+    shade->placements = [this]() -> const std::vector<BoardLayout::Slot>& { return board_.placements(); };
+    shade->current = [this] { return spotlit_; };
+    shade->hide();
+    shade_ = shade;
+    auto* rail = new SpotlightRail(this);
+    rail->placements = [this]() -> const std::vector<BoardLayout::Slot>& { return board_.placements(); };
+    rail->current = [this] { return spotlit_; };
+    rail->count = [this] { return int(items_.size()); };
+    rail->jump = [this](int index) { setCursorTo(index, Qt::NoModifier); };
+    rail->hide();
+    rail_ = rail;
+    glide_ = new QPropertyAnimation(verticalScrollBar(), "value", this);
+    glide_->setDuration(180);
+    glide_->setEasingCurve(QEasingCurve::OutCubic);
+
     placeholder_ = new QLabel;
     placeholder_->setAlignment(Qt::AlignCenter);
     placeholder_->setWordWrap(true);
@@ -77,6 +231,9 @@ ItemCanvas::ItemCanvas(Thumbnailer& thumbs, BlobStore& blobs, QWidget* parent)
 void ItemCanvas::clearItems()
 {
     layoutTimer_->stop();
+    // A glide still on its way would scroll whatever is shown next to the old
+    // napkin's target (independent review).
+    if (glide_) glide_->stop();
     carried_.clear();
     cards_.clear();
     textCards_.clear();
@@ -94,7 +251,7 @@ void ItemCanvas::clearItems()
     const QObjectList children = body_->children();
     for (QObject* child : children) {
         auto* w = qobject_cast<QWidget*>(child);
-        if (!w || w == placeholder_) continue;
+        if (!w || w == placeholder_ || w == shade_) continue;
         // Reparenting before deleteLater() takes the widget out of the tree
         // now; deferring alone leaves removed cards live and drawn until the
         // next event-loop turn.
@@ -111,8 +268,9 @@ void ItemCanvas::clearItems()
 // on its own content.
 int ItemCanvas::stableWidth() const
 {
+    // Less the rail, in Spotlight: it sits in a viewport margin.
     return std::max(kCardMinWidth, width() - verticalScrollBar()->sizeHint().width()
-                                       - frameWidth() * 2);
+                                       - frameWidth() * 2 - viewportMargins().right());
 }
 
 int ItemCanvas::widthForColumns(int columns) const
@@ -210,6 +368,7 @@ void ItemCanvas::resizeEvent(QResizeEvent* e)
 {
     QScrollArea::resizeEvent(e);
     relayout();
+    placeSpotlightChrome();
 }
 
 // Ctrl+T. One unwritten card at the top, focused, which becomes a real item the
@@ -244,7 +403,105 @@ void ItemCanvas::addPendingTextCard()
 // hold is cheaper to reason about than trying to nudge each one.
 void ItemCanvas::followApplicationFont()
 {
-    if (!qFuzzyCompare(zoom_, 1.0)) applyZoomFont();
+    if (!qFuzzyCompare(effectiveScale(), 1.0)) applyZoomFont();
+}
+
+void ItemCanvas::setSpotlight(bool on)
+{
+    if (spotlight() == on) return;
+    // Keep your place: the card that was current stays current across the
+    // switch — the one in the middle, or the cursor's, or the first on screen.
+    int keep = on ? cursor_ : spotlit_;
+    if (keep < 0 && !board_.placements().empty()) {
+        const QRect visible(0, verticalScrollBar()->value(), viewport()->width(), viewport()->height());
+        const auto shown = board_.indicesIn(visible, 0);
+        if (!shown.empty()) keep = shown.front();
+    }
+    const bool haveKeep = keep >= 0 && keep < int(items_.size());
+    // Not "kNoItem means none": the unwritten composer's id IS kNoItem.
+    const ItemId keepId = haveKeep ? items_[size_t(keep)].id : kNoItem;
+
+    glide_->stop();
+    board_.setSpotlight(on);
+    board_.setScale(effectiveScale());
+    setViewportMargins(0, 0, on ? kSpotlightRailWidth : 0, 0);
+    shade_->setVisible(on);
+    rail_->setVisible(on);
+    if (!on) spotlit_ = -1;
+    // The type size changes with the mode, and the font change rebuilds every
+    // card at it (changeEvent) — re-measured, with the preview length the new
+    // layout allows.
+    applyZoomFont();
+    relayout();
+    placeSpotlightChrome();
+
+    const int index = haveKeep ? indexOf(keepId) : -1;
+    if (index < 0) return;
+    if (on) {
+        bringToCentre(index, /*animate=*/false);
+    } else {
+        finishLayout();
+        const QRect r = board_.placements()[size_t(index)].rect;
+        ensureVisible(r.center().x(), r.center().y(), r.width() / 2, r.height() / 2 + board_.gap());
+    }
+    // Both ways: the rebuild cleared the cursor. Only the ring shows it, and
+    // only while the keyboard is on the board, so restoring it costs nothing
+    // for someone using the mouse.
+    if (auto* was = liveCardAt(cursor_)) was->setCurrent(false);
+    cursor_ = index;
+    if (auto* now = liveCardAt(cursor_)) now->setCurrent(true);
+}
+
+bool ItemCanvas::gliding() const { return glide_->state() == QAbstractAnimation::Running; }
+
+void ItemCanvas::bringToCentre(int index, bool animate)
+{
+    if (index < 0 || index >= int(items_.size())) return;
+    finishLayout();
+    if (index >= int(board_.placements().size())) return;
+    const QRect r = board_.placements()[size_t(index)].rect;
+    const int view = viewport()->height();
+    int target = r.center().y() - view / 2;
+    // Taller than the view: its top, a margin down, rather than its middle.
+    if (r.height() > view - 2 * kSpotlightMargin) target = r.top() - kSpotlightMargin;
+    QScrollBar* bar = verticalScrollBar();
+    target = std::clamp(target, bar->minimum(), bar->maximum());
+    glide_->stop();
+    if (!animate || !isVisible() || target == bar->value()) {
+        bar->setValue(target);
+        updateSpotlit();
+        return;
+    }
+    glide_->setStartValue(bar->value());
+    glide_->setEndValue(target);
+    glide_->start();
+}
+
+void ItemCanvas::updateSpotlit()
+{
+    if (!spotlight()) return;
+    const auto& all = board_.placements();
+    const int middle = verticalScrollBar()->value() + viewport()->height() / 2;
+    int best = -1, bestGap = std::numeric_limits<int>::max();
+    for (size_t i = 0; i < all.size(); ++i) {
+        const QRect& r = all[i].rect;
+        const int gap = middle < r.top() ? r.top() - middle : middle > r.bottom() ? middle - r.bottom() : 0;
+        if (gap < bestGap) { best = int(i); bestGap = gap; }
+        if (r.top() > middle) break;   // one column, top to bottom: nothing later is nearer
+    }
+    if (best == spotlit_) return;
+    spotlit_ = best;
+    shade_->update();
+    rail_->update();
+}
+
+void ItemCanvas::placeSpotlightChrome()
+{
+    if (!spotlight()) return;
+    const QRect v = viewport()->geometry();
+    rail_->setGeometry(v.right() + 1, v.top(), kSpotlightRailWidth, v.height());
+    shade_->setGeometry(body_->rect());
+    shade_->raise();
 }
 
 void ItemCanvas::changeEvent(QEvent* e)
@@ -259,9 +516,15 @@ void ItemCanvas::changeEvent(QEvent* e)
     QScrollArea::changeEvent(e);
 }
 
+qreal ItemCanvas::effectiveScale() const
+{
+    return zoom_ * (spotlight() ? kSpotlightType : 1.0);
+}
+
 void ItemCanvas::applyZoomFont()
 {
-    if (qFuzzyCompare(zoom_, 1.0)) {
+    const qreal scale = effectiveScale();
+    if (qFuzzyCompare(scale, 1.0)) {
         setFont(QFont());   // nothing resolved: inherit, as an unzoomed board always did
         return;
     }
@@ -270,7 +533,7 @@ void ItemCanvas::applyZoomFont()
     // tells every widget in no fixed order, so the parent may not have caught
     // up yet when this runs, while QApplication::font() already has.
     QFont f;
-    f.setPointSizeF(std::max(kMinPointSize, QApplication::font(this).pointSizeF() * zoom_));
+    f.setPointSizeF(std::max(kMinPointSize, QApplication::font(this).pointSizeF() * scale));
     setFont(f);
 }
 
@@ -279,7 +542,7 @@ void ItemCanvas::setZoom(qreal zoom)
     zoom = std::clamp(zoom, kMinZoom, kMaxZoom);
     if (qFuzzyCompare(zoom_, zoom)) return;
     zoom_ = zoom;
-    board_.setScale(zoom_);
+    board_.setScale(effectiveScale());
     // The font change rebuilds every card and re-measures the board.
     applyZoomFont();
 }
@@ -294,6 +557,7 @@ void ItemCanvas::setColumnCap(int columns)
 bool ItemCanvas::takeZoomWheel(QObject* receiver, QWheelEvent* e)
 {
     if (!(e->modifiers() & Qt::ControlModifier)) return false;
+    if (e->angleDelta().y() == 0) return false;   // sideways: not a zoom; leave it alone
     auto* w = qobject_cast<QWidget*>(receiver);
     if (!w || (w != this && !isAncestorOf(w))) return false;
     // A notch is 120; a touchpad sends many small deltas, so add them up.
@@ -344,7 +608,7 @@ ItemCard* ItemCanvas::cardFor(const Item& item)
 
     ItemCard* card = nullptr;
     if (item.type == ItemType::Text) {
-        auto* text = new TextItemCard(item, body_);
+        auto* text = new TextItemCard(item, body_, board_.measureLimit());
         connect(text, &TextItemCard::edited, this, &ItemCanvas::edited);
         connect(text, &TextItemCard::imagePasted, this, &ItemCanvas::imagePasted);
         connect(text, &TextItemCard::openUrlRequested, this, &ItemCanvas::openUrl);
@@ -418,6 +682,12 @@ void ItemCanvas::syncVisibleCards()
         card->setCurrent(cursor_ == i);
         card->show();
         cards_.push_back(card);
+    }
+    if (spotlight()) {
+        // Cards built since the last pass were stacked above the shade.
+        placeSpotlightChrome();
+        updateSpotlit();
+        rail_->update();
     }
 }
 
@@ -499,7 +769,7 @@ void ItemCanvas::applyFilter()
     const QObjectList children = body_->children();
     for (QObject* child : children) {
         auto* w = qobject_cast<QWidget*>(child);
-        if (!w || w == placeholder_) continue;
+        if (!w || w == placeholder_ || w == shade_) continue;
         w->hide();
         w->setParent(nullptr);
         w->deleteLater();
@@ -517,7 +787,21 @@ void ItemCanvas::applyFilter()
 
 void ItemCanvas::relayout()
 {
+    if (spotlight()) {
+        // A line of text wide, and cards up to nearly the height of the view,
+        // with room above the first and below the last to bring either to the
+        // middle.
+        const int view = viewport()->height();
+        board_.setSpotlight(true,
+                            QFontMetrics(font()).averageCharWidth() * kSpotlightMeasureChars + 2 * kCardPad,
+                            std::max(kCardMinHeight, view - 2 * kSpotlightMargin),
+                            std::max(kPadTop, view / 2 - kCardMinHeight));
+    }
     board_.setViewport(stableWidth());
+    // The preview length goes with the tallest card, which a resize in
+    // Spotlight changes without rebuilding the cards; a card holding less than
+    // the board now measures would be drawn half empty under the clip fade.
+    for (auto* text : textCards_) text->setPreviewChars(board_.measureLimit());
     if (!textCards_.empty()) board_.setFont(textCards_.front()->font());
     // Only what is on screen now; syncVisibleCards() places as far as it
     // needs, and the rest is measured while the window is idle.
@@ -529,6 +813,7 @@ void ItemCanvas::relayout()
 void ItemCanvas::resizeBody()
 {
     body_->setFixedSize(stableWidth(), std::max(board_.totalHeight(), viewport()->height()));
+    if (spotlight()) shade_->setGeometry(body_->rect());
 }
 
 void ItemCanvas::finishLayout()
@@ -573,6 +858,9 @@ void ItemCanvas::applySelection(ItemId id, Qt::KeyboardModifiers modifiers)
         if (card->itemId() != id) card->endEditing();
 
     for (auto* card : cards_) card->setSelected(selected_.contains(card->itemId()));
+    // In Spotlight the card you act on is the one in the middle: clicking a
+    // dimmed neighbour brings it there.
+    if (spotlight() && cursor_ >= 0 && cursor_ != spotlit_) bringToCentre(cursor_);
     // Selecting in the canvas moves the keyboard here. Without this, clicking a
     // card left focus on the buffer list, so Delete was delivered to the list —
     // which trashes a whole buffer — rather than to the selected item.
@@ -877,7 +1165,9 @@ void ItemCanvas::setCursorTo(int index, Qt::KeyboardModifiers modifiers)
     // that builds the card.
     finishLayout();
     const auto& placed = board_.placements();   // not `slots`: Qt owns that word
-    if (cursor_ < int(placed.size())) {
+    if (spotlight()) {
+        bringToCentre(cursor_);
+    } else if (cursor_ < int(placed.size())) {
         const QRect r = placed[size_t(cursor_)].rect;
         ensureVisible(r.center().x(), r.center().y(),
                       r.width() / 2, r.height() / 2 + board_.gap());
@@ -910,6 +1200,9 @@ void ItemCanvas::moveCursorSpatially(BoardLayout::Step step, Qt::KeyboardModifie
     if (cursor_ < 0) { setCursorTo(0, modifiers); return; }
 
     finishLayout();   // the neighbour below may not have been placed yet
+    // One column: Left and Right step through it as well, as a carousel does.
+    if (spotlight() && step == BoardLayout::Step::Left)  step = BoardLayout::Step::Up;
+    if (spotlight() && step == BoardLayout::Step::Right) step = BoardLayout::Step::Down;
     const int target = board_.neighbour(cursor_, step);
     if (target < 0) return;   // the board ends this way; stay put
     setCursorTo(target, modifiers);
@@ -921,6 +1214,23 @@ void ItemCanvas::keyPressEvent(QKeyEvent* e)
     // focus, nothing on it could take the text, and "Ctrl+T" was the only way
     // in. Typing on an empty napkin now starts a note with what was typed.
     if (isTyping(e) && startsNoteOnTyping()) { startNote(e->text()); return; }
+
+    // In Spotlight the current card is the one in the middle. After scrolling
+    // with the wheel the cursor is still wherever the keys last left it, so
+    // the keys pick up from the middle — unless a glide is still on its way to
+    // where the last key sent it.
+    if (spotlight() && spotlit_ >= 0 && cursor_ != spotlit_ && !gliding()) {
+        if (auto* was = liveCardAt(cursor_)) was->setCurrent(false);
+        cursor_ = spotlit_;
+        if (auto* now = liveCardAt(cursor_)) now->setCurrent(true);
+        // And the selection with it, unless it includes the middle card: Delete,
+        // Copy and Cut act on the selection, and one left on a card scrolled out
+        // of sight sent that card to the trash while the one in the middle
+        // stayed (independent review). A Shift+arrow range survives — the arrow
+        // brought its newest card to the middle.
+        if (!selected_.isEmpty() && !selected_.contains(items_[size_t(spotlit_)].id))
+            clearSelection();
+    }
 
     // Arrow keys walk the board in document order — down/right forward,
     // up/left back. Deliberately not spatial: masonry puts item 2 top-middle,
