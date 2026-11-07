@@ -23,7 +23,10 @@ public:
     void setUrl(const QString& url);
     QString url() const { return url_; }
 
-    static int preferredHeight();
+    // At the font the chip will actually be drawn in — the card's, which on a
+    // zoomed board is not the application's. Measuring against the application
+    // font sized a 150% chip for 100% and cut its label off at the top.
+    static int preferredHeight(const QFont& base);
 
 signals:
     void openRequested(const QString& url);

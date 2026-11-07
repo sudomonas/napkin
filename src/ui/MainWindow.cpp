@@ -47,6 +47,8 @@
 #include <QKeyEvent>
 #include <QSignalBlocker>
 #include <QActionGroup>
+#include <QSettings>
+#include <QWheelEvent>
 #include <QButtonGroup>
 #include <QGridLayout>
 #include <QPainter>
@@ -105,6 +107,12 @@ QToolButton* roundButton(const QString& name, const QString& label)
 }  // namespace
 
 namespace {
+
+// The board's view, remembered across launches. Not in the Settings dialog: these
+// are adjusted while looking at the board, from the menu and Ctrl+wheel, the way
+// a browser's zoom is.
+constexpr auto kBoardZoomKey    = "view/boardZoomPercent";
+constexpr auto kBoardColumnsKey = "view/boardColumns";
 
 // Above this many characters a timed autosave is written on the worker. A
 // 256 KB note saves in about 3 ms; it is the multi-megabyte ones that froze.
@@ -388,6 +396,15 @@ void MainWindow::buildUi()
     connect(canvas_, &ItemCanvas::cutRequested, this,
             [this](const QList<ItemId>& ids) { removeItems(ids, true); });
     connect(canvas_, &ItemCanvas::restoreRequested, this, &MainWindow::restoreTrashedCards);
+    connect(canvas_, &ItemCanvas::zoomStepRequested, this, &MainWindow::stepBoardZoom);
+    {
+        // Read back defensively: a hand-edited or corrupt value must not make a
+        // board nobody can read, so both are clamped to what the menu offers.
+        const QSettings settings;
+        canvas_->setZoom(settings.value(kBoardZoomKey, 100).toInt() / 100.0);   // clamps
+        const int columns = settings.value(kBoardColumnsKey, 0).toInt();
+        canvas_->setColumnCap(columns >= 2 && columns <= 4 ? columns : 0);
+    }
     connect(canvas_, &ItemCanvas::imagePasted, this,
             [this](const QByteArray& bytes, const QString& mime) {
                 addImageToCurrent(bytes, mime, QString());
@@ -738,6 +755,49 @@ void MainWindow::buildAppMenu()
     auto* cleanUp = menu->addAction(tr("Clean up…"));
     connect(cleanUp, &QAction::triggered, this, &MainWindow::reviewSweep);
 
+    menu->addSection(tr("View"));
+    // Ctrl+= as well as the platform's Ctrl++: on most layouts "+" needs Shift,
+    // and the key people actually press for "bigger" is the one marked "=".
+    auto* zoomIn = menu->addAction(tr("Zoom in"));
+    zoomIn->setObjectName(QStringLiteral("zoomInAction"));
+    zoomIn->setShortcuts({QKeySequence(QStringLiteral("Ctrl+=")), QKeySequence::ZoomIn});
+    zoomIn->setToolTip(tr("Bigger cards and text on the board. Ctrl+wheel works too."));
+    addAction(zoomIn);
+    connect(zoomIn, &QAction::triggered, this, [this] { stepBoardZoom(1); });
+    auto* zoomOut = menu->addAction(tr("Zoom out"));
+    zoomOut->setObjectName(QStringLiteral("zoomOutAction"));
+    zoomOut->setShortcuts(QKeySequence::keyBindings(QKeySequence::ZoomOut));
+    addAction(zoomOut);
+    connect(zoomOut, &QAction::triggered, this, [this] { stepBoardZoom(-1); });
+    auto* zoomReset = menu->addAction(tr("Actual size"));
+    zoomReset->setObjectName(QStringLiteral("zoomResetAction"));
+    zoomReset->setShortcut(QKeySequence(QStringLiteral("Ctrl+0")));
+    addAction(zoomReset);
+    connect(zoomReset, &QAction::triggered, this, [this] { setBoardZoom(1.0); });
+
+    auto* columnsMenu = menu->addMenu(tr("Board columns"));
+    columnsMenu->setObjectName(QStringLiteral("boardColumnsMenu"));
+    columnsMenu->setToolTip(tr("Fewer columns make each card wider. Useful on a large monitor."));
+    auto* columnChoices = new QActionGroup(columnsMenu);
+    columnChoices->setExclusive(true);
+    const std::pair<int, QString> columnOptions[] = {
+        {0, tr("As many as fit")}, {2, tr("At most 2")}, {3, tr("At most 3")}, {4, tr("At most 4")},
+    };
+    for (const auto& [count, label] : columnOptions) {
+        auto* a = columnsMenu->addAction(label);
+        a->setCheckable(true);
+        a->setData(count);
+        columnChoices->addAction(a);
+        connect(a, &QAction::triggered, this, [this, count] { setBoardColumns(count); });
+    }
+    // Read when shown, so what the menu says is what the board does, and the
+    // zoom level is visible somewhere other than a toast that has gone.
+    connect(menu, &QMenu::aboutToShow, this, [this, columnChoices, zoomReset] {
+        for (QAction* a : columnChoices->actions())
+            a->setChecked(a->data().toInt() == canvas_->columnCap());
+        zoomReset->setText(tr("Actual size (now %1%)").arg(qRound(canvas_->zoom() * 100)));
+    });
+
     menu->addSection(tr("Trash"));
     // A plain command, not a checkbox: the switch in the header already says
     // where you are, and a check gutter pushed every item in the menu sideways.
@@ -833,6 +893,35 @@ void MainWindow::buildAppMenu()
     openMenu->setShortcutContext(Qt::WindowShortcut);
     connect(openMenu, &QAction::triggered, overflowButton_, &QToolButton::showMenu);
     addAction(openMenu);
+}
+
+void MainWindow::setBoardZoom(qreal zoom)
+{
+    const qreal before = canvas_->zoom();
+    canvas_->setZoom(zoom);
+    QSettings().setValue(kBoardZoomKey, qRound(canvas_->zoom() * 100));
+    // Said every time, including at a limit: a key that silently does nothing
+    // reads as broken, and a zoom of 200% is otherwise indistinguishable from
+    // one that did not take.
+    const int percent = qRound(canvas_->zoom() * 100);
+    if (qFuzzyCompare(before, canvas_->zoom()) && percent != 100)
+        toast_->inform(canvas_->zoom() >= ItemCanvas::kMaxZoom
+                           ? tr("Zoom %1% — the largest").arg(percent)
+                           : tr("Zoom %1% — the smallest").arg(percent));
+    else
+        toast_->inform(tr("Zoom %1%").arg(percent));
+}
+
+void MainWindow::stepBoardZoom(int steps)
+{
+    // On the 10% grid, whatever was stored: 1.0 + 0.1 * n accumulates error.
+    setBoardZoom((qRound(canvas_->zoom() * 10) + steps) / 10.0);
+}
+
+void MainWindow::setBoardColumns(int columns)
+{
+    canvas_->setColumnCap(columns);
+    QSettings().setValue(kBoardColumnsKey, columns);
 }
 
 // One gesture back to the ordinary view from wherever you are: out of the
@@ -977,6 +1066,9 @@ void MainWindow::showShortcuts()
            "becomes <i>12*3 = 36</i></td></tr>"
            "<tr><td><b>Ctrl+Enter</b></td><td>Finish editing</td></tr>"
            "<tr><td><b>Esc</b></td><td>Finish editing, then clear the selection</td></tr>"
+           "<tr><td><b>Ctrl+=</b> / <b>Ctrl+−</b></td><td>Zoom the board in or out "
+           "(or Ctrl+wheel)</td></tr>"
+           "<tr><td><b>Ctrl+0</b></td><td>Board at actual size</td></tr>"
            "<tr><td colspan='2'>&nbsp;</td></tr>"
            "<tr><td colspan='2'><i>With the list focused:</i></td></tr>"
            "<tr><td><b>Typing</b></td><td>Write on the selected napkin</td></tr>"
@@ -1904,8 +1996,10 @@ void MainWindow::changeEvent(QEvent* e)
     if (e->type() == QEvent::WindowStateChange && fullScreenAction_)
         fullScreenAction_->setChecked(isFullScreen());
     if (e->type() == QEvent::PaletteChange) styleToolbarIcons();
-    if (e->type() == QEvent::FontChange || e->type() == QEvent::ApplicationFontChange)
+    if (e->type() == QEvent::FontChange || e->type() == QEvent::ApplicationFontChange) {
         sizeHeaderControls();
+        if (canvas_) canvas_->followApplicationFont();
+    }
     QMainWindow::changeEvent(e);
 }
 
@@ -1938,6 +2032,9 @@ void MainWindow::sizeHeaderControls()
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event)
 {
+    if (event->type() == QEvent::Wheel
+        && canvas_->takeZoomWheel(watched, static_cast<QWheelEvent*>(event)))
+        return true;
     if (event->type() == QEvent::MouseButtonPress
         && static_cast<QMouseEvent*>(event)->button() == Qt::BackButton
         && model_->mode() == BufferListModel::Mode::Trash) {

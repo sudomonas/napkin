@@ -26,6 +26,19 @@ public:
 
     void setViewport(int width);
     void setFont(const QFont& body);
+
+    // The board's zoom. Every card dimension the layout decides — the column
+    // widths it aims at and tolerates, the gap, the tallest a card may be —
+    // scales with it, because the cards' text is drawn at the same factor
+    // (ItemCanvas sets its font to match). A zoomed font in unscaled columns is
+    // just a narrower measure; scaling both is what makes the cards bigger.
+    void setScale(qreal scale);
+    qreal scale() const { return scale_; }
+    // At most this many columns; 0 places as many as fit. A capped board gives
+    // the spare width to its cards, up to kCardCappedMaxWidth, and centres the
+    // columns in whatever is still left over.
+    void setColumnCap(int columns);
+    int columnCap() const { return columnCap_; }
     // The whole board, now.
     void rebuild(const std::vector<Item>& items);
 
@@ -53,8 +66,13 @@ public:
     int columnCount() const { return columns_; }
 
     // Which column a slot was dealt into. Exact, not inferred: rebuild() places
-    // every card at kPadX + col * (columnWidth + gap).
+    // every card at left() + col * (columnWidth + gap()).
     int columnOf(int index) const;
+    // Where the first column starts, and the space between cards, at this scale.
+    int left() const { return left_; }
+    int gap() const;
+    // The tallest a card may be before it clips, at this scale.
+    int maxCardHeight() const;
 
     enum class Step { Up, Down, Left, Right };
     // Where an arrow key lands, or -1 when the board ends that way.
@@ -92,6 +110,7 @@ private:
 
     void placeNext(const Item& item);
     void updateTotalHeight();
+    int  scaled(int px) const;
 
     std::vector<Slot> placements_;
     std::vector<int> bottoms_;    // the next free y in each column
@@ -101,6 +120,9 @@ private:
     int columns_ = 1;
     int columnWidth_ = 0;
     int totalHeight_ = 0;
+    int left_ = 0;
+    qreal scale_ = 1.0;
+    int columnCap_ = 0;
     QFont* body_ = nullptr;
 };
 

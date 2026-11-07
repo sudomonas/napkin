@@ -120,6 +120,12 @@ public:
     // Returns whether text was actually stored.
     bool appendTextBlock(const QString& text = {});
 
+    // The board's zoom (View ▸ Zoom), saved across launches. A step is 10%.
+    void setBoardZoom(qreal zoom);
+    void stepBoardZoom(int steps);
+    // At most this many board columns (View ▸ Board columns); 0 = as many as fit.
+    void setBoardColumns(int columns);
+
 protected:
     void closeEvent(QCloseEvent* e) override;
     bool event(QEvent* e) override;

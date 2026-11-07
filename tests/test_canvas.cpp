@@ -1360,9 +1360,11 @@ private slots:
             items << a->text();
             if (!a->shortcut().isEmpty()) ++listed;
         }
-        QCOMPARE(sections, (QStringList{QStringLiteral("Napkins"), QStringLiteral("Trash")}));
+        QCOMPARE(sections, (QStringList{QStringLiteral("Napkins"), QStringLiteral("View"),
+                                        QStringLiteral("Trash")}));
         for (const char* needed : {"New napkin", "New note", "Paste", "Undo", "Pin or unpin",
-                                   "Rename…", "Search", "Clean up…", "Show trash", "Empty trash…",
+                                   "Rename…", "Search", "Clean up…", "Zoom in", "Zoom out",
+                                   "Actual size", "Board columns", "Show trash", "Empty trash…",
                                    "Export everything…", "Settings…", "Keyboard shortcuts…",
                                    "About Napkin", "Quit"})
             QVERIFY2(items.contains(QString::fromUtf8(needed)), needed);

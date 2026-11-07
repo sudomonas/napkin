@@ -7,7 +7,6 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
-#include <QApplication>
 #include <QFontMetrics>
 #include <algorithm>
 #include <QPushButton>
@@ -112,11 +111,17 @@ void LinkChip::resizeEvent(QResizeEvent* e)
 // and a chip with a fixed 60px height clipped its own second line the moment
 // the desktop font went up — the board measures cards from this number, so a
 // stale one is a card too short to draw the chip it was sized for.
-int LinkChip::preferredHeight()
+int LinkChip::preferredHeight(const QFont& base)
 {
-    const QFont base = QApplication::font();
-    const int host = QFontMetrics(scaledBy(base, kTypeLead, QFont::DemiBold)).height();
-    const int path = QFontMetrics(scaledBy(base, kTypeCaption)).height();
+    // size(TextSingleLine), not height(): it is what a QLabel's size hint is
+    // made of, and at fractional point sizes height() comes out a pixel short —
+    // two labels, two pixels, and the host lost the top of its letters at 150%
+    // board zoom. Measured across 7-24pt: size() matched the hint every time.
+    const auto line = [](const QFont& f) {
+        return QFontMetrics(f).size(Qt::TextSingleLine, QStringLiteral("Ag")).height();
+    };
+    const int host = line(scaledBy(base, kTypeLead, QFont::DemiBold));
+    const int path = line(scaledBy(base, kTypeCaption));
     // Tall enough for a push button too: at small fonts the button, not the
     // text, is what sets the floor.
     const int button = QFontMetrics(base).height() + 14;

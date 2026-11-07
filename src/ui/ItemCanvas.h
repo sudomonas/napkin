@@ -4,6 +4,7 @@
 #include <QScrollArea>
 
 class QKeyEvent;
+class QWheelEvent;
 class QContextMenuEvent;
 
 #include <QHash>
@@ -143,6 +144,32 @@ public:
     // background window, and always false under a headless platform.
     bool keyboardIsHere() const;
 
+    // --- zoom ----------------------------------------------------------------
+    // The board's own zoom, on top of the application's text size: the cards'
+    // font and every dimension the layout decides scale together (BoardLayout::
+    // setScale). The canvas carries the zoomed font itself, so the cards inherit
+    // it and the existing font-change rebuild re-measures the board.
+    static constexpr qreal kMinZoom = 0.7;
+    static constexpr qreal kMaxZoom = 2.0;
+    void  setZoom(qreal zoom);
+    qreal zoom() const { return zoom_; }
+    // Ctrl+wheel anywhere on the board, including over a card's text, which
+    // never sees it: a read-only QPlainTextEdit — every card not being edited —
+    // zooms its own font on Ctrl+wheel, resizing one card's text out from under
+    // the height the board measured for it. Checked before any child gets the
+    // event (MainWindow's application filter), so it does not depend on the
+    // event propagating up. Answers whether it took the event.
+    bool takeZoomWheel(QObject* receiver, QWheelEvent* e);
+    // The application's text size changed. A zoomed board carries a size of its
+    // own, so inheritance does not reach it — and the canvas is not told
+    // directly: QApplication::setFont sends ApplicationFontChange only to
+    // top-level windows (verified, Qt 6.12), which pass the change down by
+    // inheritance. So the window calls this from its own FontChange.
+    void followApplicationFont();
+    // At most this many board columns; 0 means as many as fit.
+    void setColumnCap(int columns);
+    int  columnCap() const { return board_.columnCap(); }
+
     // Ends any card that is being edited. Called whenever attention moves
     // elsewhere — another card, the empty board, another buffer — because
     // leaving a card is a commit.
@@ -165,6 +192,9 @@ signals:
     // several items at once, or of one whose card is scrolled out of the band.
     // The window puts it in the toast.
     void announced(const QString& message);
+    // Ctrl+wheel over the board: one step in or out. The window owns the zoom
+    // (it saves it and says what it changed to), so the canvas only asks.
+    void zoomStepRequested(int steps);
 
 protected:
     void mousePressEvent(QMouseEvent* e) override;
@@ -189,6 +219,11 @@ private slots:
     void openUrl(const QString& url);
 
 private:
+    // The application's font at zoom_, or the plain inherited font at 100% so
+    // an unzoomed board behaves exactly as it did before zoom existed.
+    void applyZoomFont();
+    qreal zoom_ = 1.0;
+    int   wheelAccum_ = 0;
     void wireCard(ItemCard* card);
     void acknowledgeCopy(const QList<ItemId>& ids);
     // The card for a BOARD index, or null when that item is outside the

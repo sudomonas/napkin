@@ -139,6 +139,13 @@ inline constexpr int kCardMaxWidth = 460;
 // reward for having a large screen.
 inline constexpr int kCardTargetWidth = 360;
 
+// The widest a card grows on a board whose columns are capped (View ▸ Board
+// columns). The cap exists for large monitors, where "as many 360px columns as
+// fit" means eight or nine of them; giving the width back to fewer columns makes
+// the cards themselves bigger, but past ~80 characters a line stops reading as a
+// note. kMeasureLimit still overflows kCardMaxHeight at this width.
+inline constexpr int kCardCappedMaxWidth = 640;
+
 // Enough for roughly 18 lines of body text or a landscape screenshot. Past this
 // a card would own the board, so it clips with a fade and opens on double-click.
 inline constexpr int kCardMaxHeight = 420;

@@ -1475,6 +1475,56 @@ the common case); after a delete the next card is selected, so Delete can be
 pressed again (`deletingAnItemLeavesTheNextOneSelected`).
 
 
+### Large monitors: board zoom and a column cap (2026-11-07)
+
+*User report:* on 32-inch monitors the cards are tiny and the board is hard to
+follow. Cause: extra width became more columns, never bigger cards. A 2560 px
+window drew five 410 px columns of 10.5 pt text, and a 4K screen draws eight or
+nine. Masonry also deals each card into the shortest column, so reading in order
+zig-zags across all of them.
+
+- **Zoom** (View ▸ Zoom in / Zoom out / Actual size; Ctrl+= / Ctrl+− / Ctrl+0;
+  Ctrl+wheel over the board), 70–200% in 10% steps, saved as
+  `view/boardZoomPercent`. It scales the board's font **and** every dimension
+  `BoardLayout` decides: target, min and max column width, gap, the height cap
+  and the minimum card height. Scaling only the font would just give fewer
+  words per line in the same columns; scaling both makes the cards bigger. At
+  2560 px, 150% gives three 690 px columns. It sits on top of Settings ▸ Text
+  size, not instead of it.
+  - The canvas carries the zoomed size as its own font, setting **only the
+    point size** so the family and the rest stay inherited. At 100% it sets no
+    font at all, so an unzoomed board behaves exactly as before
+    (`actualSizeLeavesTheFontInherited`).
+  - *Verified, Qt 6.12:* `QApplication::setFont` sends `ApplicationFontChange`
+    only to top-level windows, which pass the change down by inheritance. A
+    board with a size of its own never hears it, so `MainWindow::changeEvent`
+    calls `ItemCanvas::followApplicationFont()`. The `ApplicationFontChange`
+    branch in `ItemCanvas::changeEvent` never fires for this reason. It is
+    harmless: `QWidget::event` never routes that event to `changeEvent` anyway.
+  - Ctrl+wheel is taken by `MainWindow`'s application event filter before any
+    child sees it. *Found while building this:* a read-only `QPlainTextEdit`
+    (every card not being edited) zooms its own font on Ctrl+wheel (9.0 → 10.0
+    pt, verified). That resized one card's text out from under the height the
+    board had measured for it. It is handled in the filter, not by having the
+    editor ignore the event: a test could not show the ignored event reaching
+    the board.
+- **Board columns** (View ▸ Board columns: as many as fit / at most 2, 3 or 4),
+  saved as `view/boardColumns`, default uncapped. A capped board gives the
+  columns it did not draw to the cards, up to `kCardCappedMaxWidth` (640 px at
+  100%, about 80 characters), and centres the result. An uncapped board keeps
+  to the left, as before.
+- *Render found, tests had not:* at 150% the link chip lost the top of its
+  label. `LinkChip::preferredHeight()` measured against the application font.
+  It now takes the font the card is drawn in. It also used
+  `QFontMetrics::height()`, which at fractional point sizes, 10.5 pt among
+  them, is a pixel shorter than the `size(TextSingleLine)` a `QLabel`'s size
+  hint is made of (measured across 7–24 pt). The chip at 100% had fit by luck
+  of rounding.
+
+Not done here: Spotlight, a single centred reading column with dimmed
+neighbours, is the second half of this work.
+
+
 ### The three empty screens
 
 An empty list is not one state, it is three, and they mean different things:

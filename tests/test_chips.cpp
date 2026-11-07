@@ -101,9 +101,9 @@ private slots:
         f.select(id);
 
         auto* card = onlyTextCard(f);
-        QVERIFY2(card->height() >= LinkChip::preferredHeight(),
+        QVERIFY2(card->height() >= LinkChip::preferredHeight(card->font()),
                  qPrintable(QStringLiteral("card is %1px, chip needs %2px")
-                                .arg(card->height()).arg(LinkChip::preferredHeight())));
+                                .arg(card->height()).arg(LinkChip::preferredHeight(card->font()))));
         auto* open = card->findChild<QPushButton*>(QStringLiteral("linkChipOpen"));
         QVERIFY(open);
         QVERIFY(open->height() >= 20);

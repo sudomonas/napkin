@@ -20,6 +20,7 @@
 #include <QScrollBar>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 
 namespace napkin {
 namespace {
@@ -241,6 +242,11 @@ void ItemCanvas::addPendingTextCard()
 // measurements were taken against the old face, and every card cached
 // font-derived metrics when it was built. Rebuilding from the items we already
 // hold is cheaper to reason about than trying to nudge each one.
+void ItemCanvas::followApplicationFont()
+{
+    if (!qFuzzyCompare(zoom_, 1.0)) applyZoomFont();
+}
+
 void ItemCanvas::changeEvent(QEvent* e)
 {
     if (e->type() == QEvent::ApplicationFontChange || e->type() == QEvent::FontChange) {
@@ -251,6 +257,54 @@ void ItemCanvas::changeEvent(QEvent* e)
         }
     }
     QScrollArea::changeEvent(e);
+}
+
+void ItemCanvas::applyZoomFont()
+{
+    if (qFuzzyCompare(zoom_, 1.0)) {
+        setFont(QFont());   // nothing resolved: inherit, as an unzoomed board always did
+        return;
+    }
+    // Only the size is set; family, weight and the rest stay inherited. The base
+    // is the application's font, not the parent's: on a text-size change Qt
+    // tells every widget in no fixed order, so the parent may not have caught
+    // up yet when this runs, while QApplication::font() already has.
+    QFont f;
+    f.setPointSizeF(std::max(kMinPointSize, QApplication::font(this).pointSizeF() * zoom_));
+    setFont(f);
+}
+
+void ItemCanvas::setZoom(qreal zoom)
+{
+    zoom = std::clamp(zoom, kMinZoom, kMaxZoom);
+    if (qFuzzyCompare(zoom_, zoom)) return;
+    zoom_ = zoom;
+    board_.setScale(zoom_);
+    // The font change rebuilds every card and re-measures the board.
+    applyZoomFont();
+}
+
+void ItemCanvas::setColumnCap(int columns)
+{
+    if (board_.columnCap() == columns) return;
+    board_.setColumnCap(columns);
+    relayout();
+}
+
+bool ItemCanvas::takeZoomWheel(QObject* receiver, QWheelEvent* e)
+{
+    if (!(e->modifiers() & Qt::ControlModifier)) return false;
+    auto* w = qobject_cast<QWidget*>(receiver);
+    if (!w || (w != this && !isAncestorOf(w))) return false;
+    // A notch is 120; a touchpad sends many small deltas, so add them up.
+    wheelAccum_ += e->angleDelta().y();
+    const int steps = wheelAccum_ / 120;
+    if (steps != 0) {
+        wheelAccum_ -= steps * 120;
+        emit zoomStepRequested(steps);
+    }
+    e->accept();
+    return true;
 }
 
 void ItemCanvas::openUrl(const QString& url)
@@ -826,7 +880,7 @@ void ItemCanvas::setCursorTo(int index, Qt::KeyboardModifiers modifiers)
     if (cursor_ < int(placed.size())) {
         const QRect r = placed[size_t(cursor_)].rect;
         ensureVisible(r.center().x(), r.center().y(),
-                      r.width() / 2, r.height() / 2 + kCardGap);
+                      r.width() / 2, r.height() / 2 + board_.gap());
     }
     if (auto* now = liveCardAt(cursor_)) {
         now->setCurrent(true);

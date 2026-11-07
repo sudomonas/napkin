@@ -758,7 +758,7 @@ void TextItemCard::refreshChip(bool editing)
 int TextItemCard::contentHeightForWidth(int innerWidth) const
 {
     // A chip is a fixed object; it does not wrap and does not grow.
-    if (showingChip()) return LinkChip::preferredHeight();
+    if (showingChip()) return LinkChip::preferredHeight(font());
 
     // Measured against a document of our own, never the editor's.
     //

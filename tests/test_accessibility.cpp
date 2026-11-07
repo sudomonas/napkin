@@ -155,10 +155,10 @@ private slots:
 
             // ...and the card is still tall enough for the chip plus that
             // larger chrome, which is the part that was actually broken.
-            QVERIFY2(card->height() >= LinkChip::preferredHeight() + footer->height(),
+            QVERIFY2(card->height() >= LinkChip::preferredHeight(card->font()) + footer->height(),
                      qPrintable(QStringLiteral("card %1px, chip %2px, footer %3px")
                                     .arg(card->height())
-                                    .arg(LinkChip::preferredHeight())
+                                    .arg(LinkChip::preferredHeight(card->font()))
                                     .arg(footer->height())));
         }
 
