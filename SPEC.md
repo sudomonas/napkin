@@ -1204,7 +1204,7 @@ toast, thumbnail and badge radii; icon sizes; flash and toast durations.
 
 ### The mockup (2026-10-06): Napkin's own look, implemented
 
-The user supplied `mockup.png` (1280×832, light) and asked for the UI and UX to
+The user supplied `docs/mockup.png` (1280×832, light) and asked for the UI and UX to
 follow it. Measured from the image, then built — phases 2–4 of the design
 system above landed together, because the mockup decided the OPEN values.
 
@@ -2305,6 +2305,17 @@ which is the ordering doing its job. The ubuntu-22.04 runner's SQLite 3.37.2
 broke every search with a hit (§20), something CI on 24.04 could not see. The
 tag has to be re-cut once the fix is in.
 
+> *Corrected 2026-11-07:* the paragraphs below are history. The shortcut
+> shipped in v0.2.0 (`790a760`) as `src/app/GlobalShortcut.{h,cpp}`, a
+> "paste into Napkin" shortcut (preferred `Ctrl+Alt+V`, the desktop picks the
+> final key). It is Linux-only and optional. Its handshake waits on each
+> Request's `Response` signal instead of deriving paths, and the caller raises
+> and focuses the window before reading the clipboard, as §17 requires.
+> `test_tray` covers what happens after activation
+> (`MainWindow::pasteFromGlobalShortcut`). The portal round trip ends in a
+> person pressing a key, so no test runs it, and this document has no record of
+> it being run end to end on a real desktop.
+
 **The global capture hotkey is NOT done.** §17 calls it the highest-leverage
 single addition and it remains so, but it is not built, and the reasons are
 worth recording rather than leaving as an empty box:
@@ -2561,7 +2572,7 @@ not fail.**
 | *Review:* previews 0.1.7 had scaled UP were still served — blurry, and 3 px off the placeholder | low | fixed — a cached preview larger than its source is remade |
 | *Review:* the list-thumbnail test claimed a repaint it never checked | — | fixed — it counts the paint |
 | *Test user, 2026-10-06:* expected the list to show the latest addition; asked to name napkins | low | done — "Latest: …" on the row's second line; optional names (§3) |
-| *Test user, 2026-10-06:* wanted everything copied to land in Napkin without switching to it | — | decided: not a clipboard history (§1), and Wayland serves the clipboard only to a focused window (§17); the global capture hotkey is the answer, next |
+| *Test user, 2026-10-06:* wanted everything copied to land in Napkin without switching to it | — | decided: not a clipboard history (§1), and Wayland serves the clipboard only to a focused window (§17); the global capture hotkey is the answer — shipped in v0.2.0 (§16) |
 | *Test user, 2026-10-06:* could not find the way out of the trash — tried the mouse's Back button, then hunted, before seeing the "Trash" button was a toggle | medium | fixed — the trash list opens with "← Back to napkins" and the retention note; the mouse Back button and Alt+Left also leave (Alt+Left only while in the trash) |
 | *Audit, 2026-10-09:* a trash retention in the settings file that the dialog could not have written (`abc`, `30 days`, `0`, `-5`) was read by a bare `toInt()` as zero or less, and the startup purge **deleted the whole trash for good**, unasked — reproduced against the real binary and a seeded profile | high, data loss | fixed — both lifecycle settings have one reader (`BufferService`), which believes only a number in the dialog's 1–3650 range and otherwise uses the default; the dialog delegates to it. `test_buffers` covers it, and goes red with the old read restored |
 | *Audit, 2026-10-09:* the startup purge ran outside the event loop, so a throw escaped `Application::notify`: a database write-locked by another program for longer than `busy_timeout` aborted the launch with a core dump instead of a message | medium | fixed — the purge is caught and logged and runs again at the next start; reproduced with `sqlite3` holding `BEGIN IMMEDIATE`, then the launch shown to carry on |
