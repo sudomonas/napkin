@@ -73,6 +73,16 @@
   </requires>
 
   <releases>
+    <release version="0.3.0" date="2026-11-20" type="development">
+      <description>
+        <p>Spotlight reading mode, board zoom and layout controls for large monitors.</p>
+        <ul>
+          <li>Spotlight (View &gt; Spotlight, Ctrl+.): view one card at a time, large and centred, with dimmed neighbours. Navigate with Up/Down or Left/Right arrow keys, jump via the progress rail, or click any dimmed card to bring it to center.</li>
+          <li>Board Zoom: zoom in (Ctrl+=) and out (Ctrl+-) with Ctrl+0 to reset. Font and card layout scale smoothly.</li>
+          <li>Board column capping: choose a maximum number of columns for ultra-wide displays in Settings, centering the cards with comfortable reading measure.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.2" date="2026-10-07" type="development">
       <description>
         <p>The trash is easier to work with.</p>
